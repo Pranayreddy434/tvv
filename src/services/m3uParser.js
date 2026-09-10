@@ -73,29 +73,63 @@ export function parseM3U(content) {
         parsedLangs = langMatch[1].split(/;|,/).map(l => l.trim()).filter(Boolean);
       }
 
-      // Infer language from channel title & tvg-id keywords if missing or to augment
-      const searchStr = `${rawName} ${tvgIdMatch ? tvgIdMatch[1] : ''}`.toLowerCase();
+      // Infer language from channel title, tvg-id & group-title keywords
+      // IMPORTANT: only use inferred lang if tvg-language was NOT provided by the M3U
+      const searchStr = [
+        rawName,
+        tvgIdMatch ? tvgIdMatch[1] : '',
+        rawGroup,
+        countryMatch ? countryMatch[1] : '',
+      ].join(' ').toLowerCase();
+
       const langCheckMap = {
-        'Telugu': /telugu|telegu|tel\.in|6tv|10tv|99tv|abn|andhra|jyoti|bhakthi|big tv|brk news|cvr|saptagiri|yadagiri|divyavani|etv|hmtv|inews|\bntv\b|tv9 telugu|sakshi|mahaa|v6|t news|tnews|prime9|raj news|studio n|swara|subhavaartha|calvary|express tv|ap 24|ap24|tollywood|vissa|aradhana|vanitha|namasthe|hyderabad|amaravati|telangana/i,
-        'Hindi': /hindi|hin\.in|aaj tak|zee news|ndtv india|star plus|colors hindi|ABP news|india tv|news18 india|republic bharat|tv9 bharatvarsh|dd news|sansad|good news today|news24|tez|samachar/i,
-        'Tamil': /tamil|tam\.in|sun tv|vijay tv|kTV|polimer|puthiya|seithigal|thanthi|jaya|raj tv/i,
-        'Malayalam': /malayalam|mal\.in|asianet|manorama|mathrubhumi|kairali|amrita|reporter tv|24 news/i,
-        'Kannada': /kannada|kan\.in|tv9 kannada|suvarna|public tv|news18 kannada|kasthuri|udaya/i,
-        'Bengali': /bengali|bangla|ban\.in|zee 24 ghanta|abp ananda|news18 bangla/i,
-        'Marathi': /marathi|mar\.in|zee 24 taas|abp majha|tv9 marathi/i,
-        'Punjabi': /punjabi|pan\.in|ptc|zee punjabi/i,
-        'English': /english|eng\.in|\b(us|uk|ca|au)\b|bbc|cnn|fox|republic tv|times now|india today|wion|mirror now|newsx/i,
+        'Telugu': new RegExp(
+          '\\btelugu\\b|\\btelegu\\b|\\.tel\\.in|@telugu\\b' +
+          '|\\bstar\\s*maa\\b|\\bmaa\\s*(tv|movies|gold|music)\\b' +
+          '|\\bzee\\s*(telugu|cinemalu)\\b' +
+          '|\\betv\\s*(telugu|andhra|telangana|plus|cinema|life|abhiruchi)\\b' +
+          '|etv(telugu|andhra|telangana|plus|cinema|life|abhiruchi)\\.in' +
+          '|\\bgemini\\s*(tv|movies|music|comedy|life)\\b' +
+          '|\\btv9\\s*telugu\\b|\\btv5\\s*news\\b|\\bv6\\s*news\\b|\\bntv\\s*telugu\\b' +
+          '|\\bhmtv\\b|\\b10\\s*tv\\b|\\b99\\s*tv\\b|\\bprime9(\\s*news)?\\b|\\bcvr\\s*news\\b' +
+          '|\\babn\\s*(andhra|jyoth?i)\\b|abnandhra' +
+          '|\\bsakshi\\s*(tv|news)?\\b|\\b(t[\\s-]news|tnews)\\b' +
+          '|\\bvanitha\\s*tv\\b|\\bvissa\\s*tv\\b|\\bsubhavaarth?a\\b|\\bsvbc(\\s*\\d|\\s*sri)?\\b' +
+          '|\\btolly\\s*tv\\b|\\btollywood\\b|\\braj\\s*(news|musix)\\s*telugu\\b' +
+          '|\\bnews18\\s*(telugu|andhra)\\b|\\bmahaa\\s*(news|tv)\\b|\\bap\\s*24x?7\\b' +
+          '|\\bbhakthi\\s*tv\\b|\\b6\\s*tv\\s*telugu\\b' +
+          '|in:\\s*telugu|india:\\s*telugu',
+          'i'
+        ),
+        'Hindi': /hindi|hin\.in|aaj tak|zee news|ndtv india|star plus|colors (tv|hindi)|abp news|india tv|news18 india|republic bharat|tv9 bharatvarsh|dd news|sansad|news24|tez|samachar|zee bollywood|sony pal|star bharat|sab tv|star gold|zee cinema|set max|star utsav|in: hindi|india: hindi/i,
+        'Tamil': /tamil|tam\.in|sun tv|vijay tv|kalaignar|polimer|puthiya thalaimurai|seithigal|thanthi|jaya tv|raj tv|zee tamil|star vijay|dd tamil|in: tamil|india: tamil/i,
+        'Malayalam': /malayalam|mal\.in|asianet|manorama|mathrubhumi|kairali|amrita|reporter tv|in: malayalam|india: malayalam/i,
+        'Kannada': /kannada|kan\.in|tv9 kannada|suvarna|public tv kannada|news18 kannada|kasthuri|udaya|in: kannada|india: kannada/i,
+        'Bengali': /bengali|bangla|ban\.in|zee 24 ghanta|abp ananda|news18 bangla|in: bengali|india: bengali/i,
+        'Marathi': /marathi|mar\.in|zee 24 taas|abp majha|tv9 marathi|in: marathi|india: marathi/i,
+        'Punjabi': /punjabi|pan\.in|ptc|zee punjabi|in: punjabi|india: punjabi/i,
+        'English': /\benglish\b|eng\.in|bbc|cnn|fox news|sky news|republic tv|times now|india today|wion|mirror now|newsx|bloomberg|discovery|nat geo/i,
         'Spanish': /spanish|español/i,
         'French': /french|français/i,
         'German': /german|deutsch/i,
-        'Arabic': /arabic|العربية/i
+        'Arabic': /arabic|العربية/i,
       };
 
       let matchedLang = null;
-      for (const [langName, regex] of Object.entries(langCheckMap)) {
-        if (regex.test(searchStr)) {
-          matchedLang = langName;
-          break;
+      // Only infer if tvg-language was not already provided by the M3U file
+      if (parsedLangs.length === 0) {
+        for (const [langName, regex] of Object.entries(langCheckMap)) {
+          if (langName === 'Telugu') {
+            const hasExplicitTelugu = /\btelugu\b|\btelegu\b|@telugu|\.tel\.in/i.test(searchStr);
+            const isIndian = country === 'IN' || /\.in(@|$)/i.test(tvgIdMatch ? tvgIdMatch[1] : '');
+            if ((hasExplicitTelugu || isIndian) && regex.test(searchStr)) {
+              matchedLang = langName;
+              break;
+            }
+          } else if (regex.test(searchStr)) {
+            matchedLang = langName;
+            break;
+          }
         }
       }
 
@@ -103,6 +137,7 @@ export function parseM3U(content) {
         parsedLangs = [matchedLang];
       } else if (parsedLangs.length === 0) {
         parsedLangs = ['International'];
+
       }
 
       parsedLangs.forEach(l => languageSet.add(l));

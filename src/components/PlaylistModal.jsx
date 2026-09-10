@@ -1,149 +1,99 @@
 import React, { useState } from 'react';
-import { X, Upload, Link, Check, Radio, Sparkles } from 'lucide-react';
+import { X, Upload, Link, Check, Radio, Sparkles, ExternalLink } from 'lucide-react';
 
 const PRESET_PLAYLISTS = [
-  { name: 'iptv-org Index (Global All Channels)', url: 'https://iptv-org.github.io/iptv/index.m3u' },
-  { name: '🚩 Telugu Channels (iptv-org Dedicated)', url: 'https://iptv-org.github.io/iptv/languages/tel.m3u' },
-  { name: '🇮🇳 Hindi Channels (iptv-org Dedicated)', url: 'https://iptv-org.github.io/iptv/languages/hin.m3u' },
-  { name: '🇬🇧 English Channels (iptv-org Dedicated)', url: 'https://iptv-org.github.io/iptv/languages/eng.m3u' },
-  { name: '🇮🇳 Tamil Channels (iptv-org Dedicated)', url: 'https://iptv-org.github.io/iptv/languages/tam.m3u' },
-  { name: 'iptv-org Categories - Movies', url: 'https://iptv-org.github.io/iptv/categories/movies.m3u' },
-  { name: 'iptv-org Categories - Sports', url: 'https://iptv-org.github.io/iptv/categories/sports.m3u' },
-  { name: 'iptv-org Categories - News', url: 'https://iptv-org.github.io/iptv/categories/news.m3u' }
+  { name: 'iptv-org Index (All Channels)', url: 'https://iptv-org.github.io/iptv/index.m3u' },
+  { name: 'iptv-org • India', url: 'https://iptv-org.github.io/iptv/countries/in.m3u' },
+  { name: 'iptv-org • UK', url: 'https://iptv-org.github.io/iptv/countries/gb.m3u' },
+  { name: 'iptv-org • USA', url: 'https://iptv-org.github.io/iptv/countries/us.m3u' },
+  { name: 'iptv-org • Germany', url: 'https://iptv-org.github.io/iptv/countries/de.m3u' },
 ];
 
-export default function PlaylistModal({
-  isOpen,
-  onClose,
-  activePlaylistUrl,
-  onLoadUrlPlaylist,
-  onLoadLocalFilePlaylist
-}) {
-  const [inputUrl, setInputUrl] = useState(activePlaylistUrl);
+export default function PlaylistModal({ onClose, onLoadUrl, activePlaylistUrl }) {
+  const [url, setUrl] = useState(activePlaylistUrl || '');
+  const [loaded, setLoaded] = useState(false);
 
-  if (!isOpen) return null;
-
-  const handleSubmitUrl = (e) => {
-    e.preventDefault();
-    if (inputUrl.trim()) {
-      onLoadUrlPlaylist(inputUrl.trim());
-      onClose();
-    }
+  const handleLoad = () => {
+    if (!url.trim()) return;
+    onLoadUrl(url.trim());
+    setLoaded(true);
+    setTimeout(onClose, 600);
   };
 
-  const handleFileUpload = (e) => {
+  const handleFile = e => {
     const file = e.target.files[0];
     if (!file) return;
-
     const reader = new FileReader();
-    reader.onload = (evt) => {
-      const content = evt.target.result;
-      onLoadLocalFilePlaylist(content, file.name);
-      onClose();
-    };
+    reader.onload = ev => { onLoadUrl(ev.target.result); onClose(); };
     reader.readAsText(file);
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0, 0, 0, 0.75)', backdropFilter: 'blur(10px)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
-      <div className="glass-panel" style={{ width: '100%', maxWidth: '540px', borderRadius: '16px', padding: '24px', position: 'relative' }}>
-        <button onClick={onClose} className="btn-icon" style={{ position: 'absolute', top: '16px', right: '16px' }}>
-          <X size={18} />
-        </button>
+    <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box">
+        <h2 className="modal-title">
+          <Radio size={20} color="var(--accent-light)" />
+          Load M3U Playlist
+        </h2>
+        <button className="modal-close" onClick={onClose}><X size={16} /></button>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-          <Radio size={24} color="var(--accent-primary)" />
-          <h2 style={{ fontSize: '18px', color: '#fff' }}>Load IPTV Playlist</h2>
-        </div>
-
-        {/* Enter URL Form */}
-        <form onSubmit={handleSubmitUrl} style={{ marginBottom: '24px' }}>
-          <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>
-            Playlist M3U / M3U8 URL
-          </label>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <input
-              type="url"
-              placeholder="https://iptv-org.github.io/iptv/index.m3u"
-              value={inputUrl}
-              onChange={(e) => setInputUrl(e.target.value)}
-              style={{
-                flex: 1,
-                padding: '10px 14px',
-                backgroundColor: 'rgba(0,0,0,0.4)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '8px',
-                color: '#fff',
-                fontSize: '13px',
-                outline: 'none'
-              }}
-              required
-            />
-            <button type="submit" className="btn-primary" style={{ padding: '10px 16px' }}>
+        {/* URL input */}
+        <div style={{ marginBottom: 16 }}>
+          <div className="modal-label">M3U URL</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ position: 'relative', flex: 1 }}>
+              <Link size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              <input
+                type="url"
+                className="modal-input"
+                placeholder="https://example.com/playlist.m3u"
+                value={url}
+                onChange={e => { setUrl(e.target.value); setLoaded(false); }}
+                style={{ paddingLeft: 36 }}
+              />
+            </div>
+            <button
+              onClick={handleLoad}
+              className="btn-primary"
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {loaded ? <Check size={15} /> : <Sparkles size={15} />}
               Load
             </button>
           </div>
-        </form>
-
-        {/* Or Upload Local M3U File */}
-        <div style={{ marginBottom: '24px' }}>
-          <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>
-            Or Upload Local M3U File
-          </label>
-          <label
-            className="glass-card"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justify: 'center',
-              gap: '10px',
-              padding: '14px',
-              cursor: 'pointer',
-              borderColor: 'dashed rgba(255, 255, 255, 0.2)'
-            }}
-          >
-            <Upload size={18} color="var(--accent-cyan)" />
-            <span style={{ fontSize: '13px', color: 'var(--text-main)' }}>Select .m3u or .m3u8 file from device</span>
-            <input type="file" accept=".m3u,.m3u8,.txt" onChange={handleFileUpload} style={{ display: 'none' }} />
-          </label>
         </div>
 
         {/* Presets */}
-        <div>
-          <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '10px', fontWeight: 600 }}>
-            Curated Presets (iptv-org)
-          </label>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {PRESET_PLAYLISTS.map((preset) => {
-              const isSelected = activePlaylistUrl === preset.url;
-              return (
-                <button
-                  key={preset.url}
-                  onClick={() => {
-                    setInputUrl(preset.url);
-                    onLoadUrlPlaylist(preset.url);
-                    onClose();
-                  }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justify: 'space-between',
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border-color)',
-                    backgroundColor: isSelected ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255, 255, 255, 0.03)',
-                    color: isSelected ? '#818cf8' : 'var(--text-main)',
-                    cursor: 'pointer',
-                    fontSize: '13px',
-                    textAlign: 'left'
-                  }}
-                >
-                  <span>{preset.name}</span>
-                  {isSelected && <Check size={16} color="var(--accent-primary)" />}
-                </button>
-              );
-            })}
+        <div style={{ marginBottom: 16 }}>
+          <div className="modal-label">Quick Presets</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {PRESET_PLAYLISTS.map(p => (
+              <button
+                key={p.url}
+                className={`preset-btn ${activePlaylistUrl === p.url ? 'active' : ''}`}
+                onClick={() => { setUrl(p.url); onLoadUrl(p.url); setLoaded(true); setTimeout(onClose, 600); }}
+              >
+                <span>{p.name}</span>
+                {activePlaylistUrl === p.url
+                  ? <Check size={14} color="#a78bfa" />
+                  : <ExternalLink size={13} style={{ opacity: 0.4 }} />}
+              </button>
+            ))}
           </div>
+        </div>
+
+        {/* Local file */}
+        <div>
+          <div className="modal-label">Upload Local M3U File</div>
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px',
+            borderRadius: 'var(--radius-md)', border: '2px dashed var(--border-hover)',
+            background: 'var(--bg-card)', cursor: 'pointer', transition: 'var(--transition)'
+          }}>
+            <Upload size={18} color="var(--accent-light)" />
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Click to browse .m3u / .m3u8 file</span>
+            <input type="file" accept=".m3u,.m3u8" style={{ display: 'none' }} onChange={handleFile} />
+          </label>
         </div>
       </div>
     </div>

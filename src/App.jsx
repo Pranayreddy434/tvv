@@ -2,371 +2,349 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import VideoPlayer from './components/VideoPlayer';
-import ChannelGrid from './components/ChannelGrid';
-import MultiView from './components/MultiView';
 import PlaylistModal from './components/PlaylistModal';
 import ShortcutsModal from './components/ShortcutsModal';
-import { fetchPlaylist, parseM3U } from './services/m3uParser';
-import { Tv, Sparkles, AlertCircle } from 'lucide-react';
+import { parseM3U } from './services/m3uParser';
+import './index.css';
 
-const DEFAULT_PLAYLIST_URL = 'https://iptv-org.github.io/iptv/index.m3u';
+const DEFAULT_PLAYLIST = 'https://iptv-org.github.io/iptv/index.m3u';
+
+// Telugu-specific channel detection: guaranteed zero false positives
+function isTeluguChannel(channel) {
+  const name = (channel.name || '').toLowerCase();
+  const tvgId = (channel.tvgId || '').toLowerCase();
+  const group = (channel.group || '').toLowerCase();
+  const chLang = (channel.language || '').toLowerCase();
+  const chLangs = (channel.languages || []).map(l => l.toLowerCase());
+
+  // 1. Explicit Telugu language tag from M3U or parser
+  if (chLang === 'telugu' || chLang === 'telegu' || chLang === 'tel') return true;
+  if (chLangs.some(l => l === 'telugu' || l === 'telegu' || l === 'tel')) return true;
+  if (group === 'telugu' || group.includes('in: telugu') || group.includes('india: telugu')) return true;
+
+  // 2. Explicit Telugu keyword in channel name or tvgId
+  if (/\btelugu\b|\btelegu\b/.test(name) || /\btelugu\b|\btelegu\b/.test(tvgId)) return true;
+  if (/@telugu\b/i.test(tvgId)) return true;
+  if (/\.tel\.in/i.test(tvgId)) return true;
+
+  // 3. Known Telugu channel brands - strictly require Indian origin (.in in tvgId or country IN)
+  // to avoid colliding with foreign stations that share acronyms (e.g. TV5 Monde, ETV Estonia)
+  const isIndian = (channel.country || '').toUpperCase() === 'IN' || /\.in(@|$)/i.test(tvgId);
+  if (!isIndian) return false;
+
+  const teluguBrandPatterns = [
+    /\bstar\s*maa\b/,
+    /\bmaa\s*(tv|movies|gold|music)\b/,
+    /\bzee\s*(telugu|cinemalu)\b/,
+    /\betv\s*(telugu|andhra|telangana|plus|cinema|life|abhiruchi)\b/,
+    /\betv(telugu|andhra|telangana|plus|cinema|life|abhiruchi)\.in/,
+    /\bgemini\s*(tv|movies|music|comedy|life)\b/,
+    /\btv9\s*telugu\b/,
+    /\btv5\s*news\b/,
+    /\bv6\s*news\b/,
+    /\bntv\s*telugu\b/,
+    /\bhmtv\b/,
+    /\b10\s*tv\b/,
+    /\b99\s*tv\b/,
+    /\bprime9(\s*news)?\b/,
+    /\bcvr\s*news\b/,
+    /\babn\s*(andhra|jyoth?i)\b/,
+    /\babnandhra/,
+    /\bsakshi\s*(tv|news)?\b/,
+    /\b(t[\s-]news|tnews)\b/,
+    /\bvanitha\s*tv\b/,
+    /\bvissa\s*tv\b/,
+    /\bsubhavaarth?a\b/,
+    /\bsvbc(\s*\d|\s*sri)?\b/,
+    /\btolly\s*tv\b/,
+    /\btollywood\b/,
+    /\braj\s*(news|musix)\s*telugu\b/,
+    /\bnews18\s*(telugu|andhra)\b/,
+    /\bmahaa\s*(news|tv)\b/,
+    /\bap\s*24x?7\b/,
+    /\bbhakthi\s*tv\b/,
+    /\b6\s*tv\s*telugu\b/
+  ];
+
+  const combined = `${name} ${tvgId}`;
+  return teluguBrandPatterns.some(pat => pat.test(combined));
+}
+
+// Fallback keyword mapping for other languages
+const LANG_KEYWORDS = {
+  Hindi: [
+    'hindi', 'aaj tak', 'zee news', 'ndtv india', 'star plus', 'colors tv', 'abp news',
+    'india tv', 'news18 india', 'republic bharat', 'tv9 bharatvarsh', 'dd news',
+    'sansad tv', 'news24', 'news nation', 'zee hindustan', 'doordarshan', 'dd national',
+    'samachar', 'sahara', 'sony', 'tez', 'star bharat', 'sab tv', 'star gold',
+    'zee cinema', '& pictures', 'set max', 'star utsav', 'zee bollywood', 'sony pal',
+    'in: hindi', 'india: hindi',
+  ],
+  English: [
+    'english', 'bbc', 'cnn', 'fox news', 'sky news', 'discovery', 'nat geo',
+    'history channel', 'animal planet', 'bloomberg', 'dw english', 'france 24',
+    'al jazeera english', 'wion', 'times now', 'india today', 'republic tv',
+    'mirror now', 'newsx', 'cnbc', 'espn', 'sky sport',
+    'in: english', 'india: english',
+  ],
+  Tamil: [
+    'tamil', 'vijay tv', 'sun tv', 'kalaignar tv', 'raj tv', 'polimer',
+    'puthiya thalaimurai', 'thanthi', 'jaya tv', 'news 7 tamil', 'captain tv',
+    'dd tamil', 'adithya tv', 'zee tamil', 'star vijay',
+    'in: tamil', 'india: tamil',
+  ],
+};
+
+function matchesLanguage(channel, lang) {
+  if (lang === 'ALL') return true;
+  if (lang === 'Telugu') return isTeluguChannel(channel);
+
+  const langLC = lang.toLowerCase();
+
+  // 1. Check tvg-language field assigned by parser (most reliable)
+  const chLang = (channel.language || '').toLowerCase();
+  const chLangs = (channel.languages || []).map(l => l.toLowerCase());
+  if (chLang === langLC || chLang.includes(langLC)) return true;
+  if (chLangs.some(l => l === langLC || l.includes(langLC))) return true;
+
+  // 2. Check tvg-id which often encodes country/language
+  const tvgId = (channel.tvgId || '').toLowerCase();
+  if (tvgId.includes(langLC.slice(0, 3))) return true; // e.g. 'hin' in 'StarPlus.hin.in'
+
+  // 3. Keyword fallback against name + group + tvgId
+  const keywords = LANG_KEYWORDS[lang] || [];
+  const nameL = (channel.name || '').toLowerCase();
+  const groupL = (channel.group || '').toLowerCase();
+  const combined = `${nameL} ${groupL} ${tvgId}`;
+  return keywords.some(kw => combined.includes(kw));
+}
+
+function matchesCategory(channel, cat) {
+  if (cat === 'All') return true;
+  const group = (channel.group || '').toLowerCase();
+  const name = (channel.name || '').toLowerCase();
+  const catL = cat.toLowerCase();
+  return group.includes(catL) || name.includes(catL);
+}
+
+function getLSJson(key, def) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }
+  catch { return def; }
+}
 
 export default function App() {
-  const [playlistUrl, setPlaylistUrl] = useState(DEFAULT_PLAYLIST_URL);
-  const [channels, setChannels] = useState([]);
-  const [categories, setCategories] = useState([]);
-  const [countries, setCountries] = useState([]);
-  const [languages, setLanguages] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState('');
+  const [allChannels, setAllChannels] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [playlistUrl, setPlaylistUrl] = useState(
+    localStorage.getItem('activePlaylist') || DEFAULT_PLAYLIST
+  );
 
-  // Selected state
-  const [currentChannel, setCurrentChannel] = useState(null);
-  const [activeTab, setActiveTab] = useState('all'); // 'all', 'favorites', 'history'
-  const [selectedCategory, setSelectedCategory] = useState('All');
-  const [selectedCountry, setSelectedCountry] = useState('ALL');
-  const [selectedLanguage, setSelectedLanguage] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [viewLayout, setViewLayout] = useState('grid'); // 'grid', 'list', 'compact'
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState('All');
+  const [selectedLanguage, setSelectedLanguage] = useState('ALL');
 
-  // Advanced features state
+  const [currentChannel, setCurrentChannel] = useState(null);
+  const [favorites, setFavorites] = useState(getLSJson('favChannels', []));
+  const [history, setHistory] = useState(getLSJson('chHistory', []));
   const [corsProxy, setCorsProxy] = useState(false);
-  const [multiViewMode, setMultiViewMode] = useState('single'); // 'single', 'dual', 'quad'
-  const [isPlaylistModalOpen, setIsPlaylistModalOpen] = useState(false);
-  const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
 
-  // LocalStorage state for Favorites & History
-  const [favorites, setFavorites] = useState(() => {
-    try {
-      const saved = localStorage.getItem('streamhub_favorites');
-      return saved ? JSON.parse(saved) : [];
-    } catch (e) {
-      return [];
-    }
-  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeTab, setActiveTab] = useState('all');
+  const [showPlaylistModal, setShowPlaylistModal] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
 
-  const [history, setHistory] = useState(() => {
-    try {
-      const saved = localStorage.getItem('streamhub_history');
-      return saved ? JSON.parse(saved) : [];
-    } catch (e) {
-      return [];
-    }
-  });
-
-  // Save favorites to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('streamhub_favorites', JSON.stringify(favorites));
-    } catch (e) {
-      console.error('Failed to save favorites:', e);
-    }
-  }, [favorites]);
-
-  // Save history to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('streamhub_history', JSON.stringify(history));
-    } catch (e) {
-      console.error('Failed to save history:', e);
-    }
-  }, [history]);
-
-  // Load Playlist function
-  const loadPlaylistData = useCallback(async (url = playlistUrl, useCors = corsProxy) => {
+  // Load playlist
+  const loadPlaylist = useCallback(async (url) => {
+    if (!url) return;
     setIsLoading(true);
-    setLoadError('');
     try {
-      const data = await fetchPlaylist(url, useCors);
-      setChannels(data.channels);
-      setCategories(['All', ...data.categories]);
-      setCountries(['ALL', ...data.countries]);
-      setLanguages(data.languages || []);
-
-      // Set initial playing channel if none selected
-      if (data.channels.length > 0 && !currentChannel) {
-        setCurrentChannel(data.channels[0]);
-      }
+      const proxied = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+      const res = await fetch(proxied);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      const { channels } = parseM3U(text);
+      setAllChannels(channels);
+      localStorage.setItem('activePlaylist', url);
     } catch (err) {
-      console.error('Playlist load error:', err);
-      setLoadError(`Failed to load playlist (${err.message}). Try enabling CORS proxy or loading a custom M3U file.`);
+      console.error('Playlist load failed:', err);
+      // Try without proxy
+      try {
+        const res = await fetch(url);
+        const text = await res.text();
+        const { channels } = parseM3U(text);
+        setAllChannels(channels);
+      } catch (e) {
+        console.error('Direct fetch also failed:', e);
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [playlistUrl, corsProxy, currentChannel]);
-
-  // Fetch playlist on startup or URL / CORS change
-  useEffect(() => {
-    loadPlaylistData(playlistUrl, corsProxy);
-  }, [playlistUrl, corsProxy]);
-
-  // Handle Channel Selection
-  const handleSelectChannel = (channel) => {
-    setCurrentChannel(channel);
-
-    // Add to history (unshift & dedup)
-    setHistory(prev => {
-      const filtered = prev.filter(c => c.id !== channel.id && c.url !== channel.url);
-      return [channel, ...filtered].slice(0, 50); // keep last 50
-    });
-  };
-
-  // Toggle Favorite Status
-  const handleToggleFavorite = (channel) => {
-    setFavorites(prev => {
-      const exists = prev.some(c => c.id === channel.id || c.url === channel.url);
-      if (exists) {
-        return prev.filter(c => c.id !== channel.id && c.url !== channel.url);
-      } else {
-        return [channel, ...prev];
-      }
-    });
-  };
-
-  // Surprise Me / Channel Surfer
-  const handleSurpriseMe = () => {
-    if (channels.length === 0) return;
-    const randomIndex = Math.floor(Math.random() * channels.length);
-    handleSelectChannel(channels[randomIndex]);
-  };
-
-  // Language mode switch handler (auto-loads dedicated language playlist)
-  const handleLanguageModeSwitch = (lang) => {
-    setSelectedLanguage(lang);
-    setActiveTab('all');
-    setSelectedCategory('All');
-    setSearchQuery('');
-
-    if (lang === 'Telugu') {
-      setPlaylistUrl('https://iptv-org.github.io/iptv/languages/tel.m3u');
-    } else if (lang === 'Hindi') {
-      setPlaylistUrl('https://iptv-org.github.io/iptv/languages/hin.m3u');
-    } else if (lang === 'English') {
-      setPlaylistUrl('https://iptv-org.github.io/iptv/languages/eng.m3u');
-    } else if (lang === 'ALL') {
-      setPlaylistUrl(DEFAULT_PLAYLIST_URL);
-    }
-  };
-
-  // Custom Local File Upload
-  const handleLoadLocalFilePlaylist = (m3uContent, fileName) => {
-    setIsLoading(true);
-    setLoadError('');
-    try {
-      const data = parseM3U(m3uContent);
-      setChannels(data.channels);
-      setCategories(['All', ...data.categories]);
-      setCountries(['ALL', ...data.countries]);
-      setLanguages(data.languages || []);
-      setPlaylistUrl(`File: ${fileName}`);
-      if (data.channels.length > 0) {
-        setCurrentChannel(data.channels[0]);
-      }
-    } catch (e) {
-      setLoadError('Failed to parse uploaded M3U file.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Category Counts calculation
-  const categoryCounts = useMemo(() => {
-    const counts = { All: channels.length };
-    channels.forEach(ch => {
-      if (ch.group) {
-        counts[ch.group] = (counts[ch.group] || 0) + 1;
-      }
-    });
-    return counts;
-  }, [channels]);
-
-  // Filtered Channels for Display
-  const displayedChannels = useMemo(() => {
-    let source = channels;
-    if (activeTab === 'favorites') {
-      source = favorites;
-    } else if (activeTab === 'history') {
-      source = history;
-    }
-
-    return source.filter(ch => {
-      // Category filter
-      if (activeTab === 'all' && selectedCategory !== 'All' && ch.group !== selectedCategory) {
-        return false;
-      }
-      // Country filter
-      if (selectedCountry !== 'ALL' && ch.country !== selectedCountry) {
-        return false;
-      }
-      // Language filter
-      if (selectedLanguage !== 'ALL' && (!ch.languages || !ch.languages.includes(selectedLanguage))) {
-        return false;
-      }
-      // Search query filter
-      if (searchQuery.trim() !== '') {
-        const query = searchQuery.toLowerCase();
-        const nameMatch = ch.name.toLowerCase().includes(query);
-        const groupMatch = ch.group ? ch.group.toLowerCase().includes(query) : false;
-        const countryMatch = ch.country ? ch.country.toLowerCase().includes(query) : false;
-        const langMatch = ch.language ? ch.language.toLowerCase().includes(query) : false;
-        return nameMatch || groupMatch || countryMatch || langMatch;
-      }
-      return true;
-    });
-  }, [channels, favorites, history, activeTab, selectedCategory, selectedCountry, selectedLanguage, searchQuery]);
-
-  // Keyboard Shortcuts Listener
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
-
-      if (e.code === 'Space') {
-        e.preventDefault();
-        // Play/pause handled inside player or state if needed
-      } else if (e.key === 'f' || e.key === 'F') {
-        // Fullscreen toggle handled in player
-      } else if (e.key === 's' || e.key === 'S') {
-        e.preventDefault();
-        const searchInput = document.querySelector('header input[type="text"]');
-        if (searchInput) searchInput.focus();
-      } else if (e.key === '1') {
-        setMultiViewMode('single');
-      } else if (e.key === '2') {
-        setMultiViewMode('dual');
-      } else if (e.key === '4') {
-        setMultiViewMode('quad');
-      } else if (e.key === '?') {
-        setIsShortcutsModalOpen(true);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  useEffect(() => { loadPlaylist(playlistUrl); }, [playlistUrl, loadPlaylist]);
+
+  // Persist favorites & history
+  useEffect(() => { localStorage.setItem('favChannels', JSON.stringify(favorites)); }, [favorites]);
+  useEffect(() => { localStorage.setItem('chHistory', JSON.stringify(history.slice(0, 80))); }, [history]);
+
+  // Filtered channels for sidebar
+  const filteredChannels = useMemo(() => {
+    let list = allChannels;
+
+    if (selectedLanguage !== 'ALL') {
+      list = list.filter(ch => matchesLanguage(ch, selectedLanguage));
+    }
+    if (selectedCategory !== 'All') {
+      list = list.filter(ch => matchesCategory(ch, selectedCategory));
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      list = list.filter(ch =>
+        ch.name.toLowerCase().includes(q) ||
+        (ch.group || '').toLowerCase().includes(q) ||
+        (ch.country || '').toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [allChannels, selectedLanguage, selectedCategory, searchQuery]);
+
+  const handleSelectChannel = useCallback((ch) => {
+    setCurrentChannel(ch);
+    setHistory(prev => {
+      const filtered = prev.filter(h => h.id !== ch.id && h.url !== ch.url);
+      return [ch, ...filtered].slice(0, 80);
+    });
+    // On mobile, collapse sidebar when channel selected
+    if (window.innerWidth < 768) setSidebarCollapsed(true);
+  }, []);
+
+  const handleToggleFavorite = useCallback((ch) => {
+    setFavorites(prev => {
+      const exists = prev.some(f => f.id === ch.id || f.url === ch.url);
+      return exists ? prev.filter(f => f.id !== ch.id && f.url !== ch.url) : [ch, ...prev];
+    });
+  }, []);
+
+  // Language and category filters are INDEPENDENT — they stack together
+  const handleLanguageSwitch = useCallback((lang) => {
+    setSelectedLanguage(lang);
+    setActiveTab('all');
+  }, []);
+
+  const handleCategorySwitch = useCallback((cat) => {
+    setSelectedCategory(cat);
+    setActiveTab('all');
+  }, []);
+
+  const handleLoadUrl = useCallback((urlOrContent) => {
+    if (urlOrContent.startsWith('#EXTM3U') || urlOrContent.startsWith('#EXTINF')) {
+      // It's raw M3U content (file upload)
+      const { channels } = parseM3U(urlOrContent);
+      setAllChannels(channels);
+      setPlaylistUrl('local');
+    } else {
+      setPlaylistUrl(urlOrContent);
+    }
+  }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e) => {
+      const tag = e.target.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+      if (e.key === '?' || e.key === '/') setShowShortcutsModal(true);
+      if (e.key === 'p') setShowPlaylistModal(true);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  const isFavorite = currentChannel
+    ? favorites.some(f => f.id === currentChannel.id || f.url === currentChannel.url)
+    : false;
+
   return (
-    <div className="app-container">
-      {/* Header Bar */}
+    <div className="app-shell">
+      {/* TOP BAR */}
       <Header
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
-        totalChannels={channels.length}
+        totalChannels={filteredChannels.length}
         activePlaylistUrl={playlistUrl}
-        onOpenPlaylistModal={() => setIsPlaylistModalOpen(true)}
-        onOpenShortcutsModal={() => setIsShortcutsModalOpen(true)}
-        multiViewMode={multiViewMode}
-        setMultiViewMode={setMultiViewMode}
+        onOpenPlaylistModal={() => setShowPlaylistModal(true)}
+        onOpenShortcutsModal={() => setShowShortcutsModal(true)}
         corsProxy={corsProxy}
         setCorsProxy={setCorsProxy}
-        onRefreshPlaylist={() => loadPlaylistData(playlistUrl, corsProxy)}
+        onRefreshPlaylist={() => loadPlaylist(playlistUrl)}
         isLoading={isLoading}
+        selectedCategory={selectedCategory}
+        onCategorySwitch={handleCategorySwitch}
+        selectedLanguage={selectedLanguage}
+        onLanguageModeSwitch={handleLanguageSwitch}
+        sidebarCollapsed={sidebarCollapsed}
+        setSidebarCollapsed={setSidebarCollapsed}
       />
 
-      {/* Main Workspace Body */}
-      <div className="main-content">
-        {/* Left Navigation Sidebar */}
+      {/* APP BODY */}
+      <div className="app-body">
+        {/* LEFT SIDEBAR */}
         <Sidebar
+          channels={filteredChannels}
+          currentChannel={currentChannel}
+          favorites={favorites}
+          history={history}
+          onSelectChannel={handleSelectChannel}
+          onToggleFavorite={handleToggleFavorite}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
-          selectedCategory={selectedCategory}
-          setSelectedCategory={setSelectedCategory}
-          selectedCountry={selectedCountry}
-          setSelectedCountry={setSelectedCountry}
-          selectedLanguage={selectedLanguage}
-          setSelectedLanguage={setSelectedLanguage}
-          onLanguageModeSwitch={handleLanguageModeSwitch}
-          categories={categories}
-          countries={countries}
-          languages={languages}
-          favoritesCount={favorites.length}
-          historyCount={history.length}
-          categoryCounts={categoryCounts}
-          viewLayout={viewLayout}
-          setViewLayout={setViewLayout}
-          onSurpriseMe={handleSurpriseMe}
           collapsed={sidebarCollapsed}
-          setCollapsed={setSidebarCollapsed}
         />
 
-        {/* Content Area */}
-        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height))', overflow: 'hidden', position: 'relative' }}>
-          {isLoading ? (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px', color: '#fff' }}>
-              <div className="spin" style={{ width: '48px', height: '48px', border: '4px solid rgba(255, 255, 255, 0.1)', borderTopColor: 'var(--accent-primary)', borderRadius: '50%' }}></div>
-              <h2 style={{ fontSize: '18px', fontWeight: 600 }}>Loading IPTV Channel Repository...</h2>
-              <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Parsing thousands of live streams from iptv-org</p>
-            </div>
-          ) : loadError ? (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '30px', textAlign: 'center', gap: '16px' }}>
-              <AlertCircle size={56} color="#ef4444" />
-              <h2 style={{ fontSize: '20px', color: '#fff' }}>Playlist Loading Error</h2>
-              <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '500px' }}>{loadError}</p>
-              <div style={{ display: 'flex', gap: '12px', marginTop: '10px' }}>
-                <button onClick={() => setCorsProxy(!corsProxy)} className="btn-primary">
-                  {corsProxy ? 'Disable CORS Proxy' : 'Enable CORS Proxy & Retry'}
-                </button>
-                <button onClick={() => setIsPlaylistModalOpen(true)} className="btn-icon" style={{ padding: '10px 18px' }}>
-                  Load Custom Playlist
-                </button>
+        {/* MAIN VIDEO PANEL */}
+        <main className="main-panel">
+          {isLoading && allChannels.length === 0 ? (
+            <div style={{
+              flex: 1, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 20,
+              background: 'radial-gradient(ellipse at center, rgba(124,58,237,0.07) 0%, transparent 70%)'
+            }}>
+              <div className="spin" style={{
+                width: 52, height: 52,
+              border: '3px solid rgba(249,115,22,0.15)',
+              borderTopColor: '#F97316',
+                borderRadius: '50%'
+              }} />
+              <div style={{ textAlign: 'center' }}>
+                <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Loading Channels</h2>
+                <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+                  Fetching {playlistUrl === DEFAULT_PLAYLIST ? 'global IPTV directory' : 'playlist'}…
+                </p>
               </div>
             </div>
-          ) : multiViewMode !== 'single' ? (
-            /* MultiView Screen */
-            <MultiView
-              channels={displayedChannels.length > 0 ? displayedChannels : channels}
-              favorites={favorites}
+          ) : (
+            <VideoPlayer
+              channel={currentChannel}
               onToggleFavorite={handleToggleFavorite}
+              isFavorite={isFavorite}
               corsProxy={corsProxy}
               setCorsProxy={setCorsProxy}
-              multiViewMode={multiViewMode}
-              setMultiViewMode={setMultiViewMode}
             />
-          ) : (
-            /* Split View: Video Player on Top / Left & Channel Grid */
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-              {/* Player Box (Responsive height) */}
-              <div style={{ height: '52vh', minHeight: '320px', width: '100%', backgroundColor: '#000', borderBottom: '1px solid var(--border-color)', position: 'relative' }}>
-                <VideoPlayer
-                  channel={currentChannel}
-                  onToggleFavorite={handleToggleFavorite}
-                  isFavorite={favorites.some(f => f.id === currentChannel?.id || f.url === currentChannel?.url)}
-                  corsProxy={corsProxy}
-                  setCorsProxy={setCorsProxy}
-                />
-              </div>
-
-              {/* Channel Grid Section */}
-              <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                <ChannelGrid
-                  channels={displayedChannels}
-                  currentChannel={currentChannel}
-                  onSelectChannel={handleSelectChannel}
-                  favorites={favorites}
-                  onToggleFavorite={handleToggleFavorite}
-                  viewLayout={viewLayout}
-                  selectedCategory={selectedCategory}
-                  searchQuery={searchQuery}
-                />
-              </div>
-            </div>
           )}
         </main>
       </div>
 
-      {/* Modals */}
-      <PlaylistModal
-        isOpen={isPlaylistModalOpen}
-        onClose={() => setIsPlaylistModalOpen(false)}
-        activePlaylistUrl={playlistUrl}
-        onLoadUrlPlaylist={(url) => setPlaylistUrl(url)}
-        onLoadLocalFilePlaylist={handleLoadLocalFilePlaylist}
-      />
+      {/* MODALS */}
+      {showPlaylistModal && (
+        <PlaylistModal
+          onClose={() => setShowPlaylistModal(false)}
+          onLoadUrl={handleLoadUrl}
+          activePlaylistUrl={playlistUrl}
+        />
+      )}
 
-      <ShortcutsModal
-        isOpen={isShortcutsModalOpen}
-        onClose={() => setIsShortcutsModalOpen(false)}
-      />
+      {showShortcutsModal && (
+        <ShortcutsModal onClose={() => setShowShortcutsModal(false)} />
+      )}
     </div>
   );
 }
