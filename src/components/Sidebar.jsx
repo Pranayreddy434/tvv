@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Tv, Star, ChevronLeft, ChevronRight, SlidersHorizontal, Clock, ArrowDownAZ, ArrowUpAZ } from 'lucide-react';
+import { Tv, Star, ChevronLeft, ChevronRight, SlidersHorizontal, Clock, ArrowDownAZ, ArrowUpAZ, X } from 'lucide-react';
 
 const CHANNELS_PER_PAGE = 60;
 
@@ -14,7 +14,7 @@ function ChannelItem({ channel, isPlaying, isFavorite, onSelect, onToggleFavorit
     >
       <div className="ch-logo">
         {channel.logo && !imgErr ? (
-          <img src={channel.logo} alt="" onError={() => setImgErr(true)} />
+          <img src={channel.logo} alt="" referrerPolicy="no-referrer" onError={() => setImgErr(true)} />
         ) : (
           <Tv size={18} color="var(--text-muted)" />
         )}
@@ -30,6 +30,14 @@ function ChannelItem({ channel, isPlaying, isFavorite, onSelect, onToggleFavorit
             </span>
           )}
           <span className="ch-group">{channel.group}</span>
+          {(channel.isMultiAudio || (channel.languages && channel.languages.length > 1)) && (
+            <span
+              className="ch-audio-badge"
+              title={`Multi-Language Audio available: ${channel.languages ? channel.languages.join(', ') : 'Multiple tracks'}`}
+            >
+              🎧 Multi-Audio
+            </span>
+          )}
         </div>
       </div>
 
@@ -62,6 +70,7 @@ export default function Sidebar({
   activeTab,
   setActiveTab,
   collapsed,
+  onClose,
 }) {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState('DEFAULT');
@@ -77,7 +86,9 @@ export default function Sidebar({
   // Filter + sort
   const processed = useMemo(() => {
     let list = [...source];
-    if (qualityFilter !== 'ALL') {
+    if (qualityFilter === 'MULTI_AUDIO') {
+      list = list.filter(ch => ch.isMultiAudio || (ch.languages && ch.languages.length > 1));
+    } else if (qualityFilter !== 'ALL') {
       list = list.filter(ch => ch.quality.toUpperCase() === qualityFilter);
     }
     if (sort === 'A-Z') list.sort((a, b) => a.name.localeCompare(b.name));
@@ -92,12 +103,23 @@ export default function Sidebar({
   // Reset page when source/filters change
   useMemo(() => { setPage(1); }, [sort, qualityFilter, activeTab, channels.length]);
 
-  if (collapsed) return null;
-
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
       {/* Sidebar Header: tabs + controls */}
       <div className="sidebar-header">
+        {/* Mobile Header Bar */}
+        <div className="sidebar-mobile-header">
+          <div className="sidebar-mobile-title">
+            <Tv size={16} color="var(--accent)" />
+            <span>Channel Directory</span>
+          </div>
+          {onClose && (
+            <button className="sidebar-close-btn" onClick={onClose} title="Close channel drawer">
+              <X size={18} />
+            </button>
+          )}
+        </div>
+
         {/* Tab row */}
         <div style={{ display: 'flex', gap: 4 }}>
           {[
@@ -138,11 +160,12 @@ export default function Sidebar({
             value={qualityFilter}
             onChange={e => setQualityFilter(e.target.value)}
           >
-            <option value="ALL">All Quality</option>
-            <option value="4K">4K</option>
+            <option value="ALL">All Channels</option>
+            <option value="MULTI_AUDIO">🎧 Multi-Audio</option>
+            <option value="4K">4K Quality</option>
             <option value="1080P">1080p</option>
             <option value="720P">720p</option>
-            <option value="SD">SD</option>
+            <option value="SD">SD Quality</option>
           </select>
           <select
             className="sidebar-select"

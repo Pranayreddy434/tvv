@@ -83,6 +83,7 @@ export default function ChannelCard({
             <img
               src={channel.logo}
               alt={channel.name}
+              referrerPolicy="no-referrer"
               style={{ width: '100%', height: '100%', objectFit: 'contain' }}
               onError={() => setImgError(true)}
             />
@@ -163,6 +164,7 @@ export default function ChannelCard({
           <img
             src={channel.logo}
             alt={channel.name}
+            referrerPolicy="no-referrer"
             style={{ maxHeight: '100%', maxWidth: '100%', objectFit: 'contain', filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.3))' }}
             onError={() => setImgError(true)}
           />

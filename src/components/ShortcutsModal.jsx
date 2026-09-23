@@ -3,6 +3,7 @@ import { X, Keyboard } from 'lucide-react';
 
 const SHORTCUTS = [
   { key: 'Space', action: 'Play / Pause stream' },
+  { key: 'A', action: 'Cycle Audio Language (if stream has multiple tracks)' },
   { key: 'F', action: 'Toggle Fullscreen mode' },
   { key: 'M', action: 'Mute / Unmute audio' },
   { key: 'P', action: 'Open playlist loader' },

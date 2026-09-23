@@ -1,10 +1,76 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import Hls from 'hls.js';
 import {
   Play, Pause, Volume2, VolumeX, Volume1, Maximize, PictureInPicture2,
   AlertTriangle, ExternalLink, Copy, Star, Tv, ShieldAlert, Monitor,
-  ChevronDown, Check
+  ChevronDown, Check, Languages, X
 } from 'lucide-react';
+
+const ISO_LANG_MAP = {
+  tel: 'Telugu',
+  te: 'Telugu',
+  hin: 'Hindi',
+  hi: 'Hindi',
+  tam: 'Tamil',
+  ta: 'Tamil',
+  kan: 'Kannada',
+  kn: 'Kannada',
+  mal: 'Malayalam',
+  ml: 'Malayalam',
+  ben: 'Bengali',
+  bn: 'Bengali',
+  mar: 'Marathi',
+  mr: 'Marathi',
+  guj: 'Gujarati',
+  gu: 'Gujarati',
+  pan: 'Punjabi',
+  pa: 'Punjabi',
+  urd: 'Urdu',
+  ur: 'Urdu',
+  ori: 'Odia',
+  or: 'Odia',
+  eng: 'English',
+  en: 'English',
+  spa: 'Spanish',
+  es: 'Spanish',
+  fra: 'French',
+  fr: 'French',
+  deu: 'German',
+  de: 'German',
+  ita: 'Italian',
+  it: 'Italian',
+  por: 'Portuguese',
+  pt: 'Portuguese',
+  rus: 'Russian',
+  ru: 'Russian',
+  ara: 'Arabic',
+  ar: 'Arabic',
+  kor: 'Korean',
+  ko: 'Korean',
+  jpn: 'Japanese',
+  ja: 'Japanese',
+  zho: 'Chinese',
+  zh: 'Chinese',
+};
+
+function getTrackLabel(track, index) {
+  if (!track) return `Audio ${index + 1}`;
+  const langKey = (track.lang || '').toLowerCase().trim();
+  if (langKey && ISO_LANG_MAP[langKey]) {
+    if (track.name && !track.name.toLowerCase().startsWith('audio') && track.name.toLowerCase() !== langKey) {
+      return `${ISO_LANG_MAP[langKey]} (${track.name})`;
+    }
+    return ISO_LANG_MAP[langKey];
+  }
+  if (track.name && !track.name.toLowerCase().startsWith('audio_') && !track.name.toLowerCase().startsWith('audio 0')) {
+    const lowerName = track.name.toLowerCase();
+    for (const [, val] of Object.entries(ISO_LANG_MAP)) {
+      if (lowerName.includes(val.toLowerCase())) return val;
+    }
+    return track.name;
+  }
+  return track.lang ? track.lang.toUpperCase() : `Audio Track ${index + 1}`;
+}
 
 export default function VideoPlayer({
   channel,
@@ -18,6 +84,7 @@ export default function VideoPlayer({
   const containerRef = useRef(null);
   const audioCtxRef = useRef(null);
   const gainNodeRef = useRef(null);
+  const vocalFilterRef = useRef(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -27,6 +94,12 @@ export default function VideoPlayer({
   const [isLoading, setIsLoading] = useState(true);
   const [hlsLevels, setHlsLevels] = useState([]);
   const [selectedLevel, setSelectedLevel] = useState(-1);
+  const [audioTracks, setAudioTracks] = useState([]);
+  const [selectedAudioTrack, setSelectedAudioTrack] = useState(-1);
+  const [showAudioModal, setShowAudioModal] = useState(false);
+  const [speechClarity, setSpeechClarity] = useState(false);
+  const [audioToast, setAudioToast] = useState(null);
+  const audioToastTimerRef = useRef(null);
   const [aspectRatio, setAspectRatio] = useState('contain');
   const [copiedLink, setCopiedLink] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -39,10 +112,19 @@ export default function VideoPlayer({
   };
 
   useEffect(() => {
-    return () => clearTimeout(hideTimerRef.current);
+    return () => {
+      clearTimeout(hideTimerRef.current);
+      clearTimeout(audioToastTimerRef.current);
+    };
   }, []);
 
-  // Ensure Web Audio API boost context
+  const showAudioNotification = (label) => {
+    setAudioToast(label);
+    clearTimeout(audioToastTimerRef.current);
+    audioToastTimerRef.current = setTimeout(() => setAudioToast(null), 2200);
+  };
+
+  // Ensure Web Audio API boost context & dialogue clarity filter
   const ensureAudioCtx = () => {
     if (!videoRef.current) return;
     if (audioCtxRef.current) {
@@ -54,15 +136,51 @@ export default function VideoPlayer({
       const ctx = new Ctx();
       const source = ctx.createMediaElementSource(videoRef.current);
       const gain = ctx.createGain();
-      source.connect(gain);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'peaking';
+      filter.frequency.value = 2500;
+      filter.Q.value = 1.2;
+      filter.gain.value = speechClarity ? 7 : 0;
+
+      source.connect(filter);
+      filter.connect(gain);
       gain.connect(ctx.destination);
+
       audioCtxRef.current = ctx;
       gainNodeRef.current = gain;
+      vocalFilterRef.current = filter;
       gain.gain.value = volume;
     } catch (e) {
       console.warn('AudioContext error:', e);
     }
   };
+
+  const toggleSpeechClarity = () => {
+    ensureAudioCtx();
+    const next = !speechClarity;
+    setSpeechClarity(next);
+    if (vocalFilterRef.current) {
+      vocalFilterRef.current.gain.value = next ? 7 : 0;
+    }
+    showAudioNotification(next ? '🎙️ Dialogue Clarity: ON' : '🎙️ Dialogue Clarity: OFF');
+  };
+
+  // Switch Audio Track
+  const handleAudioTrackChange = useCallback((trackId) => {
+    if (trackId < 0) return;
+    setSelectedAudioTrack(trackId);
+    if (hlsRef.current) {
+      hlsRef.current.audioTrack = trackId;
+    } else if (videoRef.current?.audioTracks) {
+      Array.from(videoRef.current.audioTracks).forEach((t, idx) => {
+        t.enabled = (idx === trackId);
+      });
+    }
+    const track = audioTracks.find(t => (t.id ?? -1) === trackId) || audioTracks[trackId];
+    if (track) {
+      showAudioNotification(`Audio: ${getTrackLabel(track, trackId)}`);
+    }
+  }, [audioTracks]);
 
   // Load HLS stream
   useEffect(() => {
@@ -72,15 +190,28 @@ export default function VideoPlayer({
     setErrorMsg('');
     setHlsLevels([]);
     setSelectedLevel(-1);
+    setAudioTracks([]);
+    setSelectedAudioTrack(-1);
+    setShowAudioModal(false);
+    setAudioToast(null);
 
     const video = videoRef.current;
     if (!video) return;
 
     const streamUrl = corsProxy
-      ? `https://corsproxy.io/?${encodeURIComponent(channel.url)}`
+      ? `https://api.allorigins.win/raw?url=${encodeURIComponent(channel.url)}`
       : channel.url;
 
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+
+    const updateAudioTracksFromHls = (hlsInstance) => {
+      if (!hlsInstance) return;
+      const tracks = hlsInstance.audioTracks || [];
+      if (tracks.length > 0) {
+        setAudioTracks([...tracks]);
+        setSelectedAudioTrack(hlsInstance.audioTrack >= 0 ? hlsInstance.audioTrack : 0);
+      }
+    };
 
     if (Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true, lowLatencyMode: true, backBufferLength: 90 });
@@ -88,10 +219,36 @@ export default function VideoPlayer({
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
 
+      hls.on(Hls.Events.MANIFEST_LOADED, () => {
+        updateAudioTracksFromHls(hls);
+      });
+
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
         setIsLoading(false);
         setHlsLevels(data.levels || []);
+        updateAudioTracksFromHls(hls);
         video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+      });
+
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_, data) => {
+        if (data.audioTracks && data.audioTracks.length > 0) {
+          setAudioTracks([...data.audioTracks]);
+          setSelectedAudioTrack(hls.audioTrack >= 0 ? hls.audioTrack : 0);
+        } else {
+          updateAudioTracksFromHls(hls);
+        }
+      });
+
+      hls.on(Hls.Events.LEVEL_LOADED, () => {
+        updateAudioTracksFromHls(hls);
+      });
+
+      hls.on(Hls.Events.AUDIO_TRACK_LOADED, () => {
+        updateAudioTracksFromHls(hls);
+      });
+
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_, data) => {
+        setSelectedAudioTrack(data.id);
       });
 
       hls.on(Hls.Events.ERROR, (_, data) => {
@@ -113,6 +270,17 @@ export default function VideoPlayer({
       video.src = streamUrl;
       video.addEventListener('loadedmetadata', () => {
         setIsLoading(false);
+        if (video.audioTracks && video.audioTracks.length > 0) {
+          const list = Array.from(video.audioTracks).map((t, idx) => ({
+            id: idx,
+            name: t.label || t.language || `Track ${idx + 1}`,
+            lang: t.language,
+            enabled: t.enabled
+          }));
+          setAudioTracks(list);
+          const active = list.findIndex(t => t.enabled);
+          setSelectedAudioTrack(active >= 0 ? active : 0);
+        }
         video.play().then(() => setIsPlaying(true)).catch(() => {});
       });
       video.addEventListener('error', () => {
@@ -126,7 +294,15 @@ export default function VideoPlayer({
       setIsLoading(false);
     }
 
-    return () => { if (hlsRef.current) hlsRef.current.destroy(); };
+    const handlePlaying = () => {
+      if (hlsRef.current) updateAudioTracksFromHls(hlsRef.current);
+    };
+    video.addEventListener('playing', handlePlaying);
+
+    return () => {
+      video.removeEventListener('playing', handlePlaying);
+      if (hlsRef.current) hlsRef.current.destroy();
+    };
   }, [channel, corsProxy]);
 
   const togglePlay = () => {
@@ -177,8 +353,95 @@ export default function VideoPlayer({
     setAspectRatio(modes[(modes.indexOf(aspectRatio) + 1) % modes.length]);
   };
 
+  // Keyboard shortcut listener for VideoPlayer actions
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const tag = e.target.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        toggleMute();
+      } else if (e.key === 'a' || e.key === 'A') {
+        if (audioTracks.length > 1) {
+          e.preventDefault();
+          const curIdx = selectedAudioTrack >= 0 ? selectedAudioTrack : 0;
+          const nextIdx = (curIdx + 1) % audioTracks.length;
+          handleAudioTrackChange(nextIdx);
+        } else {
+          setShowAudioModal(prev => !prev);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [audioTracks, selectedAudioTrack, isPlaying, isMuted, volume, handleAudioTrackChange]);
+
   const volPct = Math.round((isMuted ? 0 : volume) * 100);
   const volSliderStyle = { '--val': `${Math.min(volPct, 100)}%` };
+
+  // Calculate active audio labels and multi-audio state
+  const activeAudioTrack = audioTracks.find(t => (t.id ?? -1) === selectedAudioTrack) || audioTracks[selectedAudioTrack];
+  const activeAudioName = activeAudioTrack
+    ? getTrackLabel(activeAudioTrack, selectedAudioTrack)
+    : (channel?.languages && channel.languages.length > 0 ? channel.languages[0] : (channel?.language || 'Default Audio'));
+  const hasMultipleAudios = audioTracks.length > 1 || (channel?.languages && channel.languages.length > 1) || channel?.isMultiAudio;
+
+  // Build audio options list strictly focused on Audio Tracks & Languages (NO channel names)
+  const audioOptions = useMemo(() => {
+    const list = [];
+    if (audioTracks.length > 0) {
+      audioTracks.forEach((track, idx) => {
+        const trackId = track.id ?? idx;
+        const isCurrent = (selectedAudioTrack === trackId) || (selectedAudioTrack < 0 && idx === 0);
+        list.push({
+          id: trackId,
+          type: 'hls_track',
+          label: getTrackLabel(track, idx),
+          desc: track.lang ? `Language code: ${track.lang.toUpperCase()}` : 'Embedded audio track',
+          badge: track.default ? 'Default' : undefined,
+          selected: isCurrent,
+        });
+      });
+    } else if (channel?.languages && channel.languages.length > 1) {
+      channel.languages.forEach((lang, idx) => {
+        const isCurrent = selectedAudioTrack === idx || (selectedAudioTrack < 0 && idx === 0);
+        list.push({
+          id: idx,
+          type: 'lang_meta',
+          label: `${lang} Audio`,
+          desc: `Station audio language: ${lang}`,
+          badge: idx === 0 ? 'Primary' : undefined,
+          selected: isCurrent,
+        });
+      });
+    } else {
+      list.push({
+        id: 0,
+        type: 'default',
+        label: `${activeAudioName}`,
+        desc: 'Direct station audio transmission',
+        badge: 'Stereo',
+        selected: true,
+      });
+    }
+    return list;
+  }, [audioTracks, selectedAudioTrack, channel, activeAudioName]);
+
+  const handleSelectAudioOption = (opt) => {
+    if (opt.type === 'hls_track') {
+      handleAudioTrackChange(opt.id);
+    } else {
+      setSelectedAudioTrack(opt.id);
+      showAudioNotification(`Audio: ${opt.label}`);
+    }
+    setShowAudioModal(false);
+  };
 
   if (!channel) {
     return (
@@ -219,29 +482,128 @@ export default function VideoPlayer({
         style={{ objectFit: aspectRatio }}
       />
 
+      {/* Audio notification HUD */}
+      {audioToast && (
+        <div className="audio-toast">
+          <Languages size={15} color="#FB923C" />
+          <span>{audioToast}</span>
+        </div>
+      )}
+
+      {/* Audio Language Selection Popover */}
+      {showAudioModal && (
+        <div className="audio-modal-popover" onClick={e => e.stopPropagation()}>
+          <div className="audio-modal-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Languages size={16} color="#FB923C" />
+              <span style={{ fontWeight: 700, fontSize: 13, color: '#fff' }}>Audio Options</span>
+            </div>
+            <button className="audio-modal-close" onClick={() => setShowAudioModal(false)} title="Close audio menu">
+              <X size={15} />
+            </button>
+          </div>
+
+          <div className="audio-modal-body">
+            {/* Audio Options List: STRICTLY AUDIO TRACKS & AUDIO LANGUAGES */}
+            <div className="audio-section-label">Select Audio Track / Language:</div>
+            <div className="audio-tracks-list">
+              {audioOptions.map((opt) => (
+                <button
+                  key={opt.id}
+                  className={`audio-track-item ${opt.selected ? 'active' : ''}`}
+                  onClick={() => handleSelectAudioOption(opt)}
+                >
+                  <div className="audio-track-radio">
+                    {opt.selected && <div className="audio-radio-inner" />}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span className="audio-track-name">{opt.label}</span>
+                    {opt.desc && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</span>}
+                  </div>
+                  {opt.badge && <span className="audio-default-tag">{opt.badge}</span>}
+                  {opt.selected && <Check size={14} color="#10b981" />}
+                </button>
+              ))}
+            </div>
+
+            {/* Audio Sound Enhancements */}
+            <div style={{ marginTop: 12 }}>
+              <div className="audio-section-label">Audio Enhancement:</div>
+              <button
+                className={`audio-enhancement-btn ${speechClarity ? 'active' : ''}`}
+                onClick={toggleSpeechClarity}
+                title="Boost vocal clarity on dialogues"
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+                  <Volume2 size={16} color={speechClarity ? '#10b981' : 'var(--text-muted)'} />
+                  <div>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, color: '#fff' }}>Dialogue Clarity Boost</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Enhances speech presence (1kHz–4kHz)</div>
+                  </div>
+                </div>
+                <span className={`toggle-pill ${speechClarity ? 'on' : 'off'}`}>
+                  {speechClarity ? 'ON' : 'OFF'}
+                </span>
+              </button>
+            </div>
+
+            {/* Volume Boost quick switch */}
+            <div style={{ marginTop: 12 }}>
+              <div className="audio-section-label">Volume Level:</div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                {[1, 2, 3, 4].map(b => (
+                  <button
+                    key={b}
+                    className={`boost-pill ${volume === b ? 'active' : ''}`}
+                    style={{ flex: 1, padding: '5px 0', fontSize: 11 }}
+                    onClick={() => handleVolumeChange(b)}
+                  >
+                    {b * 100}%
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="audio-modal-footer">
+            <span>Tip: Press <kbd className="shortcut-kbd">A</kbd> to cycle audio languages</span>
+          </div>
+        </div>
+      )}
+
       {/* TOP BAR */}
       <div className="player-top-bar" style={{ opacity: controlsVisible ? 1 : 0, transition: 'opacity 0.3s' }}>
         <div className="player-channel-info">
           {channel.logo ? (
             <div className="player-channel-logo">
-              <img src={channel.logo} alt={channel.name} onError={e => e.target.style.display = 'none'} />
+              <img src={channel.logo} alt={channel.name} referrerPolicy="no-referrer" onError={e => e.target.style.display = 'none'} />
             </div>
           ) : (
             <div className="player-channel-logo">
               <Tv size={20} color="rgba(255,255,255,0.6)" />
             </div>
           )}
-          <div>
+          <div className="player-channel-text">
             <div className="player-channel-name">{channel.name}</div>
             <div className="player-channel-group">
-              {channel.group}
-              {channel.country !== 'Global' && ` · ${channel.country}`}
-              {channel.language && channel.language !== 'English' && ` · ${channel.language}`}
+              <span>{channel.group}</span>
+              {channel.country !== 'Global' && <span className="meta-hide-mobile">{` · ${channel.country}`}</span>}
+              {channel.language && <span className="meta-hide-mobile">{` · ${channel.language}`}</span>}
             </div>
           </div>
-          <span className={`badge badge-${(channel.quality || 'sd').toLowerCase()}`} style={{ marginLeft: 8 }}>
+          <span className={`badge badge-${(channel.quality || 'sd').toLowerCase()} player-badge`}>
             {channel.quality}
           </span>
+          {/* Top Bar Audio Pill */}
+          <button
+            className={`player-audio-pill ${hasMultipleAudios ? 'multi' : ''}`}
+            onClick={() => setShowAudioModal(prev => !prev)}
+            title="Audio Options (Press 'A' to switch)"
+          >
+            <Languages size={12} />
+            <span>Audio: {activeAudioName}</span>
+            {hasMultipleAudios && <span className="audio-badge-dot" />}
+          </button>
         </div>
 
         <div className="player-top-actions">
@@ -356,6 +718,32 @@ export default function VideoPlayer({
 
           <div className="spacer" />
 
+          {/* Audio Language Option */}
+          <div className="audio-control-wrap">
+            <button
+              className={`ctrl-btn audio-toggle-btn ${showAudioModal ? 'active' : ''} ${hasMultipleAudios ? 'highlight' : ''}`}
+              onClick={() => setShowAudioModal(prev => !prev)}
+              title="Audio Options (Press 'A' to switch)"
+            >
+              <Languages size={15} />
+              <span className="audio-btn-label">{activeAudioName}</span>
+            </button>
+            {audioTracks.length > 1 && (
+              <select
+                className="ctrl-select audio-select"
+                value={selectedAudioTrack}
+                onChange={e => handleAudioTrackChange(parseInt(e.target.value))}
+                title="Select Audio Language"
+              >
+                {audioTracks.map((track, idx) => (
+                  <option key={track.id ?? idx} value={track.id ?? idx}>
+                    {getTrackLabel(track, idx)}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
           {/* Quality Picker */}
           {hlsLevels.length > 0 && (
             <select
@@ -375,9 +763,9 @@ export default function VideoPlayer({
           )}
 
           {/* Aspect ratio */}
-          <button onClick={cycleAspect} className="ctrl-btn" title="Aspect ratio" style={{ gap: 4, padding: '0 8px', width: 'auto' }}>
+          <button onClick={cycleAspect} className="ctrl-btn aspect-btn" title="Aspect ratio">
             <Monitor size={14} />
-            <span style={{ fontSize: 10, textTransform: 'capitalize' }}>{aspectRatio}</span>
+            <span className="aspect-label">{aspectRatio}</span>
           </button>
 
           {/* PiP */}

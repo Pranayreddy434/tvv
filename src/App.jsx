@@ -16,58 +16,102 @@ function isTeluguChannel(channel) {
   const group = (channel.group || '').toLowerCase();
   const chLang = (channel.language || '').toLowerCase();
   const chLangs = (channel.languages || []).map(l => l.toLowerCase());
+  const country = (channel.country || '').toUpperCase();
+  const url = (channel.url || '').toLowerCase();
 
-  // 1. Explicit Telugu language tag from M3U or parser
-  if (chLang === 'telugu' || chLang === 'telegu' || chLang === 'tel') return true;
-  if (chLangs.some(l => l === 'telugu' || l === 'telegu' || l === 'tel')) return true;
-  if (group === 'telugu' || group.includes('in: telugu') || group.includes('india: telugu')) return true;
+  // 1. Strict Exclusions (channels that contain keywords or shared acronyms but are NOT Telugu)
+  // Non-Telugu language feeds of SVBC (SVBC 2 = Tamil, SVBC 3 = Kannada, SVBC 4 = Hindi)
+  if (/\bsvbc\s*[234]\b/i.test(name) || /svbc[234]\.in/i.test(tvgId)) return false;
 
-  // 2. Explicit Telugu keyword in channel name or tvgId
-  if (/\btelugu\b|\btelegu\b/.test(name) || /\btelugu\b|\btelegu\b/.test(tvgId)) return true;
-  if (/@telugu\b/i.test(tvgId)) return true;
-  if (/\.tel\.in/i.test(tvgId)) return true;
+  // Big TV Malayalam feed
+  if (/big\s*tv\s*24x?7/i.test(name) || /bigtv24x7/i.test(tvgId) || url.includes('bigtvmalayalam')) return false;
 
-  // 3. Known Telugu channel brands - strictly require Indian origin (.in in tvgId or country IN)
-  // to avoid colliding with foreign stations that share acronyms (e.g. TV5 Monde, ETV Estonia)
-  const isIndian = (channel.country || '').toUpperCase() === 'IN' || /\.in(@|$)/i.test(tvgId);
+  // Non-Telugu regional / pan-India channels
+  if (/\b4\s*sides\s*tv\b/i.test(name) || /4sidestv/i.test(tvgId)) return false;
+  if (/\b9\s*plus\s*news\b/i.test(name) || /9plusnews/i.test(tvgId)) return false;
+  if (/\bgospel\s*tv\s*india\b/i.test(name) || /gospeltvindia/i.test(tvgId)) return false;
+  if (/\bmetro\s*tv\b/i.test(name) || /metrotv/i.test(tvgId)) return false;
+  if (/^mango\s*\(india\)/i.test(name) || tvgId === 'mango.in@sd') return false;
+  if (/\bstudio\s*(one\s*\+|yuva)\b/i.test(name) || /studio(oneplus|yuva)/i.test(tvgId)) return false;
+  // Exclude ETV Bal Bharat (Hindi children's channel)
+  if (/bal\s*bharat/i.test(name) || /balbharat/i.test(tvgId)) return false;
+
+  // Check if channel explicitly designates Telugu in title or TVG-ID
+  const hasExplicitTeluguInNameOrId =
+    /\b(telugu|telegu)\b/i.test(name) ||
+    /\b(telugu|telegu)\b/i.test(tvgId) ||
+    /@telugu\b/i.test(tvgId) ||
+    /\.tel\.in/i.test(tvgId);
+
+  // Exclude non-Telugu pan-Indian channels that are placed in tel.m3u solely due to secondary audio tracks
+  // (e.g. Disney Channel, Hungama, Nick, Sonic, Sony Pix, Sony BBC Earth, Star Sports 2 HD English, etc.)
+  const nonTeluguPanIndiaPattern = /hungama|nickelodeon|\bnick\b|\bsonic\b|disney|sony\s*(bbc|pix|yay)|super\s*hungama|history\s*tv18|national\s*geographic|nat\s*geo|cartoon\s*network|discovery|eurosport|fox\s*life|dd\s*sports|sada\s*tv|yet\s*(tv|max)/i;
+  if (!hasExplicitTeluguInNameOrId && (nonTeluguPanIndiaPattern.test(name) || nonTeluguPanIndiaPattern.test(tvgId))) {
+    return false;
+  }
+
+  // Star Sports 2 (English) vs Star Sports 2 Telugu
+  if (/star\s*sports\s*2\b/i.test(name) && !hasExplicitTeluguInNameOrId) return false;
+  if (/starsports2\.in@hd/i.test(tvgId) && !hasExplicitTeluguInNameOrId) return false;
+
+  // 2. Explicit Telugu language tag or group
+  const hasExplicitTelugu =
+    hasExplicitTeluguInNameOrId ||
+    chLang === 'telugu' || chLang === 'telegu' || chLang === 'tel' ||
+    chLangs.some(l => l === 'telugu' || l === 'telegu' || l === 'tel') ||
+    group === 'telugu' || group.includes('in: telugu') || group.includes('india: telugu');
+
+  if (hasExplicitTelugu) return true;
+
+  // 3. For brand acronyms (ETV, ABN, Gemini, TV9, TV5, V6, NTV, 10TV, etc.), STRICTLY require Indian origin (.in in tvgId or country IN)
+  // This completely eliminates foreign channels like ETV Estonia, ETV Turkey, ABN Pakistan, iNews Indonesia, etc.
+  const isIndian = country === 'IN' || /\.in(@|$)/i.test(tvgId);
   if (!isIndian) return false;
 
-  const teluguBrandPatterns = [
-    /\bstar\s*maa\b/,
-    /\bmaa\s*(tv|movies|gold|music)\b/,
-    /\bzee\s*(telugu|cinemalu)\b/,
-    /\betv\s*(telugu|andhra|telangana|plus|cinema|life|abhiruchi)\b/,
-    /\betv(telugu|andhra|telangana|plus|cinema|life|abhiruchi)\.in/,
-    /\bgemini\s*(tv|movies|music|comedy|life)\b/,
-    /\btv9\s*telugu\b/,
-    /\btv5\s*news\b/,
-    /\bv6\s*news\b/,
-    /\bntv\s*telugu\b/,
-    /\bhmtv\b/,
-    /\b10\s*tv\b/,
-    /\b99\s*tv\b/,
-    /\bprime9(\s*news)?\b/,
-    /\bcvr\s*news\b/,
-    /\babn\s*(andhra|jyoth?i)\b/,
-    /\babnandhra/,
-    /\bsakshi\s*(tv|news)?\b/,
-    /\b(t[\s-]news|tnews)\b/,
-    /\bvanitha\s*tv\b/,
-    /\bvissa\s*tv\b/,
-    /\bsubhavaarth?a\b/,
-    /\bsvbc(\s*\d|\s*sri)?\b/,
-    /\btolly\s*tv\b/,
-    /\btollywood\b/,
-    /\braj\s*(news|musix)\s*telugu\b/,
-    /\bnews18\s*(telugu|andhra)\b/,
-    /\bmahaa\s*(news|tv)\b/,
-    /\bap\s*24x?7\b/,
-    /\bbhakthi\s*tv\b/,
-    /\b6\s*tv\s*telugu\b/
-  ];
+  const teluguBrandRegex = new RegExp(
+    '\\bstar\\s*maa\\b|\\bstarmaa\\b|\\bmaa\\s*(tv|movies|gold|music)\\b' +
+    '|\\bzee\\s*(telugu|cinemalu)\\b|\\bzeecinemalu\\b' +
+    '|\\betv\\s*(telugu|andhra|telangana|plus|cinema|life|abhiruchi|news|beats|comedy|josh|music)?\\b' +
+    '|\\betv(telugu|andhra|telangana|plus|cinema|life|abhiruchi|news|beats|comedy|josh|music)?\\.in' +
+    '|\\bgemini\\s*(tv|movies|music|comedy|life)\\b|\\bsungemini\\b' +
+    '|\\btv9\\s*telugu\\b|\\btv9telugu\\b|\\btv5\\s*news\\b|\\btv5news\\b|\\bv6\\s*news\\b|\\bv6news\\b' +
+    '|\\bntv\\s*telugu\\b|\\bntvtelugu\\b|\\bntv\\s*news\\b' +
+    '|\\bhmtv\\b|\\b10\\s*tv\\b|\\b10tv\\b|\\b99\\s*tv\\b|\\b99tv\\b' +
+    '|\\bprime\\s*9(\\s*news)?\\b|\\bprime9news\\b' +
+    '|\\bcvr\\s*(news|health|om|spiritual)\\b|\\bcvr(news|health|omspiritual)?\\.in' +
+    '|\\babn\\s*(andhra|jyoth?i)?\\b|\\babnandhra\\b|\\babn\\.in\\b' +
+    '|\\bsakshi\\s*(tv|news)?\\b|\\bsakshitv\\b' +
+    '|\\b(t[\\s-]news|tnews)\\b' +
+    '|\\bbig\\s*tv\\b|\\bbigtv\\.in\\b' +
+    '|\\bbrk\\s*news\\b|\\bbrknews\\.in\\b' +
+    '|\\bswatantra\\s*tv\\b|\\bswatantratv\\.in\\b' +
+    '|\\bdd\\s*(saptagiri|yadagiri)\\b|\\bdd(saptagiri|yadagiri)\\.in\\b' +
+    '|\\bvanitha\\s*tv\\b|\\bvanithatv\\b' +
+    '|\\bvissa\\s*tv\\b|\\bvissatv\\b' +
+    '|\\bsvbc\\b|\\bsvbc\\.in\\b' +
+    '|\\bbhakthi\\s*tv\\b|\\bbhakthitv\\b' +
+    '|\\b6\\s*tv\\s*telugu\\b|\\b6tvtelugu\\b' +
+    '|\\bmahaa\\s*(news|tv|max|bhakti)\\b|\\bmahaa(news|max|bhakti)?\\.in\\b' +
+    '|\\bmango\\s*(mobile\\s*tv|music|telugu)\\b|\\bmangomobiletv\\b' +
+    '|\\binews\\b|\\binews\\.in\\b' +
+    '|\\bmojo\\s*tv\\b|\\bmojotv\\.in\\b' +
+    '|\\bdivyavani\\s*tv\\b|\\bdivyavanitv\\b' +
+    '|\\bhindu\\s*dharmam\\b|\\bhindudharmam\\b' +
+    '|\\bnireekshana\\s*tv\\b|\\bnireekshanatv\\b' +
+    '|\\bsubhavaarth?a\\b|\\bsubhavaarthatv\\b' +
+    '|\\btolly\\s*tv\\b|\\btollywood\\b|\\btollytv\\b' +
+    '|\\braj\\s*(news|musix)\\s*telugu\\b|\\braj(news|musix)telugu\\b' +
+    '|\\bnews18\\s*(telugu|andhra|telangana)\\b' +
+    '|\\btelugu\\s*one\\b|\\bteluguone\\.in\\b' +
+    '|\\bap\\s*24x?7\\b' +
+    '|\\bpmc\\s*telugu\\b|\\bpmctelugu\\b' +
+    '|\\bwow\\s*kidz\\s*telugu\\b|wowkidz.*telugu' +
+    '|sony.*sport.*telugu|star.*sport.*telugu',
+    'i'
+  );
 
-  const combined = `${name} ${tvgId}`;
-  return teluguBrandPatterns.some(pat => pat.test(combined));
+  const combined = `${name} ${tvgId} ${group}`;
+  return teluguBrandRegex.test(combined);
 }
 
 // Fallback keyword mapping for other languages
@@ -109,7 +153,8 @@ function matchesLanguage(channel, lang) {
 
   // 2. Check tvg-id which often encodes country/language
   const tvgId = (channel.tvgId || '').toLowerCase();
-  if (tvgId.includes(langLC.slice(0, 3))) return true; // e.g. 'hin' in 'StarPlus.hin.in'
+  const lang3 = langLC.slice(0, 3);
+  if (tvgId.endsWith(`.${lang3}.in`) || tvgId.includes(`.${lang3}@`) || tvgId.includes(`@${langLC}`)) return true;
 
   // 3. Keyword fallback against name + group + tvgId
   const keywords = LANG_KEYWORDS[lang] || [];
@@ -148,7 +193,9 @@ export default function App() {
   const [history, setHistory] = useState(getLSJson('chHistory', []));
   const [corsProxy, setCorsProxy] = useState(false);
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    return typeof window !== 'undefined' ? window.innerWidth < 768 : false;
+  });
   const [activeTab, setActiveTab] = useState('all');
   const [showPlaylistModal, setShowPlaylistModal] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
@@ -157,28 +204,44 @@ export default function App() {
   const loadPlaylist = useCallback(async (url) => {
     if (!url) return;
     setIsLoading(true);
+    // 1. Try direct fetch first (iptv-org has native CORS Access-Control-Allow-Origin: *)
     try {
-      const proxied = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-      const res = await fetch(proxied);
+      const res = await fetch(url);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const text = await res.text();
       const { channels } = parseM3U(text);
       setAllChannels(channels);
       localStorage.setItem('activePlaylist', url);
-    } catch (err) {
-      console.error('Playlist load failed:', err);
-      // Try without proxy
+      setIsLoading(false);
+      return;
+    } catch (directErr) {
+      console.warn('Direct playlist fetch failed, attempting fallback proxies:', directErr);
+    }
+
+    // 2. Fallback to CORS proxies if direct fetch was blocked
+    const proxyUrls = [
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+      `https://corsproxy.io/?${encodeURIComponent(url)}`
+    ];
+    let loaded = false;
+    for (const pUrl of proxyUrls) {
       try {
-        const res = await fetch(url);
+        const res = await fetch(pUrl);
+        if (!res.ok) continue;
         const text = await res.text();
         const { channels } = parseM3U(text);
         setAllChannels(channels);
-      } catch (e) {
-        console.error('Direct fetch also failed:', e);
+        localStorage.setItem('activePlaylist', url);
+        loaded = true;
+        break;
+      } catch {
+        // try next proxy
       }
-    } finally {
-      setIsLoading(false);
     }
+    if (!loaded) {
+      console.error('All playlist fetch attempts failed for:', url);
+    }
+    setIsLoading(false);
   }, []);
 
   useEffect(() => { loadPlaylist(playlistUrl); }, [playlistUrl, loadPlaylist]);
@@ -287,6 +350,13 @@ export default function App() {
 
       {/* APP BODY */}
       <div className="app-body">
+        {/* Mobile Backdrop Overlay */}
+        <div
+          className={`sidebar-backdrop ${!sidebarCollapsed ? 'active' : ''}`}
+          onClick={() => setSidebarCollapsed(true)}
+          aria-hidden="true"
+        />
+
         {/* LEFT SIDEBAR */}
         <Sidebar
           channels={filteredChannels}
@@ -298,6 +368,7 @@ export default function App() {
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           collapsed={sidebarCollapsed}
+          onClose={() => setSidebarCollapsed(true)}
         />
 
         {/* MAIN VIDEO PANEL */}
@@ -324,6 +395,8 @@ export default function App() {
           ) : (
             <VideoPlayer
               channel={currentChannel}
+              allChannels={allChannels}
+              onSelectChannel={handleSelectChannel}
               onToggleFavorite={handleToggleFavorite}
               isFavorite={isFavorite}
               corsProxy={corsProxy}
