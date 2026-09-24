@@ -76,7 +76,7 @@ export default function PlaylistModal({ onClose, onLoadUrl, activePlaylistUrl })
               >
                 <span>{p.name}</span>
                 {activePlaylistUrl === p.url
-                  ? <Check size={14} color="#a78bfa" />
+                  ? <Check size={14} color="var(--accent)" />
                   : <ExternalLink size={13} style={{ opacity: 0.4 }} />}
               </button>
             ))}

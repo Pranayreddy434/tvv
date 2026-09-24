@@ -32,7 +32,7 @@ export default function ShortcutsModal({ onClose }) {
               <kbd style={{
                 padding: '3px 8px', borderRadius: 6,
                 background: 'var(--bg-hover)', border: '1px solid var(--border-hover)',
-                color: '#a78bfa', fontSize: 12, fontWeight: 700,
+                color: 'var(--accent-light)', fontSize: 12, fontWeight: 700,
                 fontFamily: 'monospace'
               }}>{s.key}</kbd>
             </div>

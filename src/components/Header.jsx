@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Tv, RefreshCw, Shield, ListPlus, HelpCircle,
-  Menu, Search as SearchIcon
+  Menu, Search as SearchIcon, Palette
 } from 'lucide-react';
 
 const CATEGORIES = [
@@ -15,6 +15,12 @@ const LANG_PILLS = [
   { label: '🇮🇳 Hindi', value: 'Hindi' },
   { label: '🇬🇧 English', value: 'English' },
   { label: '🇮🇳 Tamil', value: 'Tamil' },
+];
+
+const THEME_OPTIONS = [
+  { id: 'sunset', label: '🔥 Sunset' },
+  { id: 'gold', label: '👑 Gold' },
+  { id: 'cyber', label: '⚡ Cyber' },
 ];
 
 export default function Header({
@@ -35,6 +41,25 @@ export default function Header({
   sidebarCollapsed,
   setSidebarCollapsed,
 }) {
+  const [currentTheme, setCurrentTheme] = useState(() => {
+    return localStorage.getItem('appTheme') || 'sunset';
+  });
+
+  const handleCycleTheme = () => {
+    const ids = THEME_OPTIONS.map(t => t.id);
+    const nextIdx = (ids.indexOf(currentTheme) + 1) % ids.length;
+    const nextTheme = ids[nextIdx];
+    setCurrentTheme(nextTheme);
+    document.documentElement.setAttribute('data-theme', nextTheme);
+    localStorage.setItem('appTheme', nextTheme);
+  };
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', currentTheme);
+  }, [currentTheme]);
+
+  const activeThemeObj = THEME_OPTIONS.find(t => t.id === currentTheme) || THEME_OPTIONS[0];
+
   return (
     <header className="topbar">
       {/* Primary Top Row */}
@@ -43,9 +68,12 @@ export default function Header({
         <div className="topbar-left">
           <div className="topbar-brand">
             <div className="topbar-logo">
-              <Tv size={20} color="#fff" />
+              <Tv size={19} color="#fff" />
             </div>
-            <span className="topbar-title">StreamHub</span>
+            <div className="brand-text-wrap">
+              <span className="topbar-title">StreamHub</span>
+              <span className="topbar-badge">NEO</span>
+            </div>
           </div>
 
           <button
@@ -84,6 +112,16 @@ export default function Header({
 
         {/* Right: Actions */}
         <div className="topbar-actions">
+          {/* Theme Switcher Button */}
+          <button
+            onClick={handleCycleTheme}
+            className="theme-selector-btn"
+            title={`Current Theme: ${activeThemeObj.label}. Click to switch theme.`}
+          >
+            <Palette size={14} />
+            <span>{activeThemeObj.label}</span>
+          </button>
+
           <button
             onClick={onRefreshPlaylist}
             className="icon-btn"
@@ -95,7 +133,7 @@ export default function Header({
 
           <button
             onClick={() => setCorsProxy(!corsProxy)}
-            className={`icon-btn ${corsProxy ? 'active' : ''}`}
+            className={`icon-btn ${corsProxy ? 'active-gold' : ''}`}
             title={corsProxy ? 'CORS Proxy ON (Bypasses stream blocks)' : 'CORS Proxy OFF'}
           >
             <Shield size={15} />
@@ -155,4 +193,3 @@ export default function Header({
     </header>
   );
 }
-

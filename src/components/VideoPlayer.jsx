@@ -3,54 +3,27 @@ import Hls from 'hls.js';
 import {
   Play, Pause, Volume2, VolumeX, Volume1, Maximize, PictureInPicture2,
   AlertTriangle, ExternalLink, Copy, Star, Tv, ShieldAlert, Monitor,
-  ChevronDown, Check, Languages, X
+  ChevronDown, Check, Languages, X, Menu, Zap, Radio
 } from 'lucide-react';
+import {
+  AUDIO_LANGUAGES,
+  matchesLanguage,
+  ISO_LANG_MAP
+} from '../services/languageService';
 
-const ISO_LANG_MAP = {
-  tel: 'Telugu',
-  te: 'Telugu',
-  hin: 'Hindi',
-  hi: 'Hindi',
-  tam: 'Tamil',
-  ta: 'Tamil',
-  kan: 'Kannada',
-  kn: 'Kannada',
-  mal: 'Malayalam',
-  ml: 'Malayalam',
-  ben: 'Bengali',
-  bn: 'Bengali',
-  mar: 'Marathi',
-  mr: 'Marathi',
-  guj: 'Gujarati',
-  gu: 'Gujarati',
-  pan: 'Punjabi',
-  pa: 'Punjabi',
-  urd: 'Urdu',
-  ur: 'Urdu',
-  ori: 'Odia',
-  or: 'Odia',
-  eng: 'English',
-  en: 'English',
-  spa: 'Spanish',
-  es: 'Spanish',
-  fra: 'French',
-  fr: 'French',
-  deu: 'German',
-  de: 'German',
-  ita: 'Italian',
-  it: 'Italian',
-  por: 'Portuguese',
-  pt: 'Portuguese',
-  rus: 'Russian',
-  ru: 'Russian',
-  ara: 'Arabic',
-  ar: 'Arabic',
-  kor: 'Korean',
-  ko: 'Korean',
-  jpn: 'Japanese',
-  ja: 'Japanese',
-  zho: 'Chinese',
-  zh: 'Chinese',
+const REGIONAL_NATIVE_NAMES = {
+  Telugu: 'తెలుగు',
+  Hindi: 'हिंदी',
+  English: 'English',
+  Tamil: 'தமிழ்',
+  Kannada: 'ಕನ್ನಡ',
+  Malayalam: 'മലയാളം',
+  Bengali: 'বাংলা',
+  Marathi: 'मराठी',
+  Gujarati: 'ગુજરાતી',
+  Punjabi: 'ਪੰਜਾਬੀ',
+  Odia: 'ଓଡ଼ିଆ',
+  Urdu: 'اردو',
 };
 
 function getTrackLabel(track, index) {
@@ -74,10 +47,13 @@ function getTrackLabel(track, index) {
 
 export default function VideoPlayer({
   channel,
+  allChannels = [],
+  onSelectChannel,
   onToggleFavorite,
   isFavorite,
   corsProxy,
   setCorsProxy,
+  onOpenChannels,
 }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
@@ -385,25 +361,66 @@ export default function VideoPlayer({
   const volPct = Math.round((isMuted ? 0 : volume) * 100);
   const volSliderStyle = { '--val': `${Math.min(volPct, 100)}%` };
 
+  // Available audio languages for this channel (from HLS tracks and channel metadata)
+  const channelAvailableLanguages = useMemo(() => {
+    const set = new Set();
+    if (channel?.languages) {
+      channel.languages.forEach(l => set.add(l.toLowerCase()));
+    }
+    if (channel?.language) {
+      set.add(channel.language.toLowerCase());
+    }
+    if (audioTracks && audioTracks.length > 0) {
+      audioTracks.forEach((t, idx) => {
+        const lbl = getTrackLabel(t, idx).toLowerCase();
+        set.add(lbl);
+        if (t.lang) {
+          const mapped = ISO_LANG_MAP[t.lang.toLowerCase()];
+          if (mapped) set.add(mapped.toLowerCase());
+          set.add(t.lang.toLowerCase());
+        }
+        if (t.name) {
+          for (const [, val] of Object.entries(ISO_LANG_MAP)) {
+            if (t.name.toLowerCase().includes(val.toLowerCase())) {
+              set.add(val.toLowerCase());
+            }
+          }
+        }
+      });
+    }
+    return set;
+  }, [channel, audioTracks]);
+
   // Calculate active audio labels and multi-audio state
   const activeAudioTrack = audioTracks.find(t => (t.id ?? -1) === selectedAudioTrack) || audioTracks[selectedAudioTrack];
-  const activeAudioName = activeAudioTrack
+  const activeAudioFullName = activeAudioTrack
     ? getTrackLabel(activeAudioTrack, selectedAudioTrack)
     : (channel?.languages && channel.languages.length > 0 ? channel.languages[0] : (channel?.language || 'Default Audio'));
+  
+  // Clean, short label for player button (e.g. "Telugu", "Hindi", "English")
+  const activeAudioShort = useMemo(() => {
+    let s = activeAudioFullName;
+    if (s.includes('(')) s = s.split('(')[0].trim();
+    if (s.length > 9) s = s.slice(0, 8) + '…';
+    return s || 'Audio';
+  }, [activeAudioFullName]);
+
   const hasMultipleAudios = audioTracks.length > 1 || (channel?.languages && channel.languages.length > 1) || channel?.isMultiAudio;
 
-  // Build audio options list strictly focused on Audio Tracks & Languages (NO channel names)
+  // Build audio options list strictly focused on Audio Tracks & Languages (JioTV / D2H Style)
   const audioOptions = useMemo(() => {
     const list = [];
     if (audioTracks.length > 0) {
       audioTracks.forEach((track, idx) => {
         const trackId = track.id ?? idx;
         const isCurrent = (selectedAudioTrack === trackId) || (selectedAudioTrack < 0 && idx === 0);
+        const rawLabel = getTrackLabel(track, idx);
+        const nativeScript = REGIONAL_NATIVE_NAMES[rawLabel] || '';
         list.push({
           id: trackId,
           type: 'hls_track',
-          label: getTrackLabel(track, idx),
-          desc: track.lang ? `Language code: ${track.lang.toUpperCase()}` : 'Embedded audio track',
+          label: nativeScript ? `${rawLabel} (${nativeScript})` : rawLabel,
+          desc: track.lang ? `Live Stream Audio: ${track.lang.toUpperCase()}` : 'Live embedded multi-audio track',
           badge: track.default ? 'Default' : undefined,
           selected: isCurrent,
         });
@@ -411,27 +428,96 @@ export default function VideoPlayer({
     } else if (channel?.languages && channel.languages.length > 1) {
       channel.languages.forEach((lang, idx) => {
         const isCurrent = selectedAudioTrack === idx || (selectedAudioTrack < 0 && idx === 0);
+        const nativeScript = REGIONAL_NATIVE_NAMES[lang] || '';
         list.push({
           id: idx,
           type: 'lang_meta',
-          label: `${lang} Audio`,
-          desc: `Station audio language: ${lang}`,
+          label: nativeScript ? `${lang} (${nativeScript})` : `${lang} Audio`,
+          desc: `Broadcast station audio: ${lang}`,
           badge: idx === 0 ? 'Primary' : undefined,
           selected: isCurrent,
         });
       });
     } else {
+      const nativeScript = REGIONAL_NATIVE_NAMES[activeAudioFullName] || '';
       list.push({
         id: 0,
         type: 'default',
-        label: `${activeAudioName}`,
-        desc: 'Direct station audio transmission',
+        label: nativeScript ? `${activeAudioFullName} (${nativeScript})` : activeAudioFullName,
+        desc: 'Direct live station audio stream',
         badge: 'Stereo',
         selected: true,
       });
     }
     return list;
-  }, [audioTracks, selectedAudioTrack, channel, activeAudioName]);
+  }, [audioTracks, selectedAudioTrack, channel, activeAudioFullName]);
+
+  const [activeLanguageCode, setActiveLanguageCode] = useState(() => {
+    return channel?.language || 'English';
+  });
+
+  useEffect(() => {
+    if (channel?.language) {
+      setActiveLanguageCode(channel.language);
+    }
+  }, [channel?.id, channel?.url, channel?.language]);
+
+  const handleSelectAudioLanguage = useCallback((targetLang) => {
+    // 1. Look for embedded HLS track matching targetLang
+    if (audioTracks && audioTracks.length > 0) {
+      const langObj = AUDIO_LANGUAGES.find(l => l.code.toLowerCase() === targetLang.toLowerCase());
+      const isoCodes = langObj ? langObj.iso : [targetLang.toLowerCase().slice(0, 3)];
+
+      const trackIdx = audioTracks.findIndex(t => {
+        const tLang = (t.lang || '').toLowerCase();
+        const tName = (t.name || '').toLowerCase();
+        return (
+          isoCodes.some(code => tLang === code || tLang.startsWith(code) || tName.includes(code)) ||
+          tName.includes(targetLang.toLowerCase()) ||
+          (ISO_LANG_MAP[tLang] && ISO_LANG_MAP[tLang].toLowerCase() === targetLang.toLowerCase())
+        );
+      });
+
+      if (trackIdx !== -1) {
+        const chosenTrack = audioTracks[trackIdx];
+        const trackId = chosenTrack.id ?? trackIdx;
+        handleAudioTrackChange(trackId);
+        setActiveLanguageCode(targetLang);
+        showAudioNotification(`🔊 Audio: ${targetLang} (${getTrackLabel(chosenTrack, trackIdx)})`, 3000);
+        setShowAudioModal(false);
+        return;
+      }
+    }
+
+    // 2. If already playing in that language
+    if (matchesLanguage(channel, targetLang)) {
+      setActiveLanguageCode(targetLang);
+      showAudioNotification(`🔊 "${channel.name}" is already playing in ${targetLang}`, 2600);
+      setShowAudioModal(false);
+      return;
+    }
+
+    // 3. This channel broadcaster does not have this audio track
+    // CRITICAL: NEVER switch channel! Keep the current channel playing uninterrupted!
+    showAudioNotification(
+      `ℹ️ "${channel.name}" broadcasts only in ${channel.language || 'Original'}. No ${targetLang} audio track for this channel.`,
+      3500
+    );
+    setShowAudioModal(false);
+  }, [audioTracks, channel, handleAudioTrackChange]);
+
+  const handleAudioDropdownChange = (val) => {
+    if (val.startsWith('track_')) {
+      const trackId = parseInt(val.replace('track_', ''), 10);
+      handleAudioTrackChange(trackId);
+      const track = audioTracks.find(t => (t.id ?? -1) === trackId) || audioTracks[trackId];
+      if (track) {
+        showAudioNotification(`🔊 Audio track: ${getTrackLabel(track, trackId)}`, 3000);
+      }
+      return;
+    }
+    handleSelectAudioLanguage(val);
+  };
 
   const handleSelectAudioOption = (opt) => {
     if (opt.type === 'hls_track') {
@@ -447,19 +533,20 @@ export default function VideoPlayer({
     return (
       <div className="player-wrap">
         <div className="player-empty">
-          <div style={{
-            width: 80, height: 80, borderRadius: 20,
-            background: 'linear-gradient(135deg, rgba(249,115,22,0.18), rgba(56,189,248,0.10))',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            border: '1px solid rgba(249,115,22,0.2)'
-          }}>
-            <Tv size={36} color="rgba(249,115,22,0.65)" />
+          <div className="player-empty-icon-wrap">
+            <Tv size={36} color="var(--accent)" />
           </div>
           <div>
-            <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>Select a Channel</h2>
-            <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>
-              Browse and pick a channel from the sidebar to start streaming
+            <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 8, color: 'var(--text-primary)' }}>Select a Channel</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: 14, maxWidth: 380, margin: '0 auto 16px' }}>
+              Pick any channel from the live directory to start ultra-fast streaming
             </p>
+            {onOpenChannels && (
+              <button onClick={onOpenChannels} className="btn-primary" style={{ margin: '0 auto' }}>
+                <Menu size={16} />
+                <span>Open Channels Directory</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -485,18 +572,25 @@ export default function VideoPlayer({
       {/* Audio notification HUD */}
       {audioToast && (
         <div className="audio-toast">
-          <Languages size={15} color="#FB923C" />
+          <Languages size={15} color="var(--accent-light)" />
           <span>{audioToast}</span>
         </div>
       )}
 
-      {/* Audio Language Selection Popover */}
+      {/* JioTV / D2H Multi-Language Audio Selection Modal */}
       {showAudioModal && (
         <div className="audio-modal-popover" onClick={e => e.stopPropagation()}>
           <div className="audio-modal-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Languages size={16} color="#FB923C" />
-              <span style={{ fontWeight: 700, fontSize: 13, color: '#fff' }}>Audio Options</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <Languages size={16} color="var(--accent-light)" />
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13, color: '#fff', letterSpacing: '0.2px' }}>
+                  Select Audio Language
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  JioTV & D2H Multi-Audio Feeds
+                </div>
+              </div>
             </div>
             <button className="audio-modal-close" onClick={() => setShowAudioModal(false)} title="Close audio menu">
               <X size={15} />
@@ -504,8 +598,47 @@ export default function VideoPlayer({
           </div>
 
           <div className="audio-modal-body">
-            {/* Audio Options List: STRICTLY AUDIO TRACKS & AUDIO LANGUAGES */}
-            <div className="audio-section-label">Select Audio Track / Language:</div>
+            {/* Multiple Audio Language Dropdown (JioTV / D2H) */}
+            <div className="audio-modal-dropdown-block">
+              <div className="audio-section-label">Select Audio Language (JioTV / D2H):</div>
+              <div className="audio-select-dropdown-wrap">
+                <Languages size={15} color="var(--accent-light)" />
+                <select
+                  className="audio-modal-select-input"
+                  value={activeLanguageCode}
+                  onChange={e => handleAudioDropdownChange(e.target.value)}
+                >
+                  {audioTracks.length > 1 && (
+                    <optgroup label="Live Stream Audio Tracks">
+                      {audioTracks.map((track, idx) => {
+                        const trackId = track.id ?? idx;
+                        const label = getTrackLabel(track, idx);
+                        return (
+                          <option key={`modal-track-${trackId}`} value={`track_${trackId}`}>
+                            🎧 {label} {track.default ? '(Default)' : ''}
+                          </option>
+                        );
+                      })}
+                    </optgroup>
+                  )}
+                  <optgroup label={audioTracks.length > 1 ? "Switch by Language" : "Audio Languages"}>
+                    {AUDIO_LANGUAGES.map(lang => {
+                      const isAvail = channelAvailableLanguages.has(lang.code.toLowerCase());
+                      return (
+                        <option key={lang.code} value={lang.code}>
+                          {lang.flag} {lang.label} {isAvail ? '✓ (Available)' : ''}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                </select>
+              </div>
+            </div>
+
+            {/* Embedded HLS Audio Tracks */}
+            <div className="audio-section-label" style={{ marginTop: 12 }}>
+              {audioTracks.length > 1 ? `Detected Audio Tracks (${audioTracks.length}):` : 'Live Audio Stream:'}
+            </div>
             <div className="audio-tracks-list">
               {audioOptions.map((opt) => (
                 <button
@@ -521,24 +654,24 @@ export default function VideoPlayer({
                     {opt.desc && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</span>}
                   </div>
                   {opt.badge && <span className="audio-default-tag">{opt.badge}</span>}
-                  {opt.selected && <Check size={14} color="#10b981" />}
+                  {opt.selected && <Check size={14} color="var(--accent-light)" />}
                 </button>
               ))}
             </div>
 
             {/* Audio Sound Enhancements */}
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginTop: 14 }}>
               <div className="audio-section-label">Audio Enhancement:</div>
               <button
                 className={`audio-enhancement-btn ${speechClarity ? 'active' : ''}`}
                 onClick={toggleSpeechClarity}
-                title="Boost vocal clarity on dialogues"
+                title="Boost dialogue frequencies for clear speech"
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-                  <Volume2 size={16} color={speechClarity ? '#10b981' : 'var(--text-muted)'} />
+                  <Volume2 size={16} color={speechClarity ? 'var(--accent-light)' : 'var(--text-muted)'} />
                   <div>
                     <div style={{ fontSize: 11.5, fontWeight: 600, color: '#fff' }}>Dialogue Clarity Boost</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Enhances speech presence (1kHz–4kHz)</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Crisp dialogue enhancement (1kHz–4kHz)</div>
                   </div>
                 </div>
                 <span className={`toggle-pill ${speechClarity ? 'on' : 'off'}`}>
@@ -598,25 +731,30 @@ export default function VideoPlayer({
           <button
             className={`player-audio-pill ${hasMultipleAudios ? 'multi' : ''}`}
             onClick={() => setShowAudioModal(prev => !prev)}
-            title="Audio Options (Press 'A' to switch)"
+            title="Audio Languages (Press 'A' to switch)"
           >
             <Languages size={12} />
-            <span>Audio: {activeAudioName}</span>
+            <span>Audio: {activeAudioShort}</span>
             {hasMultipleAudios && <span className="audio-badge-dot" />}
           </button>
         </div>
 
         <div className="player-top-actions">
+          {onOpenChannels && (
+            <button onClick={onOpenChannels} className="ctrl-btn" title="Open Channels Drawer">
+              <Menu size={15} />
+            </button>
+          )}
           <button
             onClick={() => onToggleFavorite(channel)}
             className="ctrl-btn"
-            style={{ borderColor: isFavorite ? 'rgba(244,63,94,0.5)' : undefined, background: isFavorite ? 'rgba(244,63,94,0.15)' : undefined }}
+            style={{ borderColor: isFavorite ? 'rgba(245,158,11,0.5)' : undefined, background: isFavorite ? 'rgba(245,158,11,0.15)' : undefined }}
             title={isFavorite ? 'Remove favorite' : 'Add favorite'}
           >
-            <Star size={15} fill={isFavorite ? '#f43f5e' : 'none'} color={isFavorite ? '#f43f5e' : undefined} />
+            <Star size={15} fill={isFavorite ? '#F59E0B' : 'none'} color={isFavorite ? '#F59E0B' : undefined} />
           </button>
           <button onClick={copyUrl} className="ctrl-btn" title="Copy stream URL">
-            {copiedLink ? <Check size={15} color="#10b981" /> : <Copy size={15} />}
+            {copiedLink ? <Check size={15} color="var(--accent)" /> : <Copy size={15} />}
           </button>
           <a href={channel.url} target="_blank" rel="noopener noreferrer" className="ctrl-btn" title="Open externally">
             <ExternalLink size={15} />
@@ -630,7 +768,7 @@ export default function VideoPlayer({
           <div className="spin" style={{
             width: 44, height: 44,
             border: '3px solid rgba(255,255,255,0.1)',
-            borderTopColor: '#F97316',
+            borderTopColor: 'var(--accent)',
             borderRadius: '50%'
           }} />
           <span style={{ color: 'var(--text-secondary)', fontSize: 14, fontWeight: 500 }}>
@@ -718,42 +856,60 @@ export default function VideoPlayer({
 
           <div className="spacer" />
 
-          {/* Audio Language Option */}
-          <div className="audio-control-wrap">
+          {/* Multiple Audio Dropdown (JioTV / D2H Multi-Language) */}
+          <div className="player-audio-control-group">
             <button
               className={`ctrl-btn audio-toggle-btn ${showAudioModal ? 'active' : ''} ${hasMultipleAudios ? 'highlight' : ''}`}
               onClick={() => setShowAudioModal(prev => !prev)}
-              title="Audio Options (Press 'A' to switch)"
+              title="Open Audio Options & Boost Dialog"
             >
               <Languages size={15} />
-              <span className="audio-btn-label">{activeAudioName}</span>
             </button>
-            {audioTracks.length > 1 && (
+            <div className="player-audio-dropdown-wrap">
               <select
-                className="ctrl-select audio-select"
-                value={selectedAudioTrack}
-                onChange={e => handleAudioTrackChange(parseInt(e.target.value))}
-                title="Select Audio Language"
+                className="player-audio-dropdown"
+                value={activeLanguageCode}
+                onChange={e => handleAudioDropdownChange(e.target.value)}
+                title="Select Audio Language (JioTV / D2H)"
               >
-                {audioTracks.map((track, idx) => (
-                  <option key={track.id ?? idx} value={track.id ?? idx}>
-                    {getTrackLabel(track, idx)}
-                  </option>
-                ))}
+                {audioTracks.length > 1 && (
+                  <optgroup label="Live Tracks">
+                    {audioTracks.map((track, idx) => {
+                      const trackId = track.id ?? idx;
+                      const label = getTrackLabel(track, idx);
+                      return (
+                        <option key={`ctrl-track-${trackId}`} value={`track_${trackId}`}>
+                          🎧 {label} {track.default ? '(Default)' : ''}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                )}
+                <optgroup label={audioTracks.length > 1 ? "By Language" : "Audio Language"}>
+                  {AUDIO_LANGUAGES.map(lang => {
+                    const isAvail = channelAvailableLanguages.has(lang.code.toLowerCase());
+                    return (
+                      <option key={lang.code} value={lang.code}>
+                        {lang.flag} {lang.code} {isAvail ? '✓' : ''}
+                      </option>
+                    );
+                  })}
+                </optgroup>
               </select>
-            )}
+            </div>
           </div>
 
-          {/* Quality Picker */}
+          {/* Quality Picker (Hidden on mobile / small screens) */}
           {hlsLevels.length > 0 && (
             <select
-              className="ctrl-select"
+              className="ctrl-select player-quality-select"
               value={selectedLevel}
               onChange={e => {
                 const lv = parseInt(e.target.value);
                 setSelectedLevel(lv);
                 if (hlsRef.current) hlsRef.current.currentLevel = lv;
               }}
+              title="Stream Quality"
             >
               <option value={-1}>Auto</option>
               {hlsLevels.map((lv, i) => (
@@ -763,9 +919,8 @@ export default function VideoPlayer({
           )}
 
           {/* Aspect ratio */}
-          <button onClick={cycleAspect} className="ctrl-btn aspect-btn" title="Aspect ratio">
-            <Monitor size={14} />
-            <span className="aspect-label">{aspectRatio}</span>
+          <button onClick={cycleAspect} className="ctrl-btn aspect-btn" title={`Aspect Ratio: ${aspectRatio}`}>
+            <Monitor size={15} />
           </button>
 
           {/* PiP */}

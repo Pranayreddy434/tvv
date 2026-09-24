@@ -24,9 +24,9 @@ function ChannelItem({ channel, isPlaying, isFavorite, onSelect, onToggleFavorit
         <div className="ch-name">{channel.name}</div>
         <div className="ch-meta">
           {isPlaying && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <span className="live-dot" style={{ width: 6, height: 6, flexShrink: 0 }} />
-              <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 700 }}>LIVE</span>
+              <span style={{ fontSize: 10, color: 'var(--accent-light)', fontWeight: 700 }}>LIVE</span>
             </span>
           )}
           <span className="ch-group">{channel.group}</span>
@@ -35,7 +35,7 @@ function ChannelItem({ channel, isPlaying, isFavorite, onSelect, onToggleFavorit
               className="ch-audio-badge"
               title={`Multi-Language Audio available: ${channel.languages ? channel.languages.join(', ') : 'Multiple tracks'}`}
             >
-              🎧 Multi-Audio
+              🎧 Audio
             </span>
           )}
         </div>
@@ -47,13 +47,13 @@ function ChannelItem({ channel, isPlaying, isFavorite, onSelect, onToggleFavorit
           onClick={e => { e.stopPropagation(); onToggleFavorite(channel); }}
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
-            color: isFavorite ? '#f43f5e' : 'var(--text-dim)',
+            color: isFavorite ? '#F59E0B' : 'var(--text-muted)',
             padding: '2px', lineHeight: 0,
             transition: 'var(--transition)'
           }}
           title={isFavorite ? 'Remove favorite' : 'Add favorite'}
         >
-          <Star size={13} fill={isFavorite ? '#f43f5e' : 'none'} />
+          <Star size={13} fill={isFavorite ? '#F59E0B' : 'none'} />
         </button>
       </div>
     </div>
@@ -71,6 +71,10 @@ export default function Sidebar({
   setActiveTab,
   collapsed,
   onClose,
+  selectedLanguage = 'ALL',
+  onLanguageSwitch,
+  selectedCategory = 'All',
+  onCategorySwitch,
 }) {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState('DEFAULT');
@@ -89,7 +93,7 @@ export default function Sidebar({
     if (qualityFilter === 'MULTI_AUDIO') {
       list = list.filter(ch => ch.isMultiAudio || (ch.languages && ch.languages.length > 1));
     } else if (qualityFilter !== 'ALL') {
-      list = list.filter(ch => ch.quality.toUpperCase() === qualityFilter);
+      list = list.filter(ch => (ch.quality || 'SD').toUpperCase() === qualityFilter);
     }
     if (sort === 'A-Z') list.sort((a, b) => a.name.localeCompare(b.name));
     else if (sort === 'Z-A') list.sort((a, b) => b.name.localeCompare(a.name));
@@ -132,12 +136,12 @@ export default function Sidebar({
               onClick={() => { setActiveTab(tab.key); setPage(1); }}
               style={{
                 flex: 1,
-                padding: '5px 6px',
+                padding: '6px 6px',
                 borderRadius: 'var(--radius-sm)',
                 border: '1px solid',
                 borderColor: activeTab === tab.key ? 'var(--border-active)' : 'var(--border)',
                 background: activeTab === tab.key ? 'var(--accent-dim)' : 'transparent',
-                color: activeTab === tab.key ? '#a78bfa' : 'var(--text-muted)',
+                color: activeTab === tab.key ? 'var(--accent-light)' : 'var(--text-muted)',
                 fontSize: 11,
                 fontWeight: 600,
                 cursor: 'pointer',
@@ -153,14 +157,15 @@ export default function Sidebar({
           ))}
         </div>
 
-        {/* Filter row */}
-        <div className="sidebar-controls">
+        {/* Desktop Controls (Hidden on smaller screens) */}
+        <div className="sidebar-controls sidebar-desktop-controls">
           <select
             className="sidebar-select"
             value={qualityFilter}
             onChange={e => setQualityFilter(e.target.value)}
+            title="Filter by Quality"
           >
-            <option value="ALL">All Channels</option>
+            <option value="ALL">All Qualities</option>
             <option value="MULTI_AUDIO">🎧 Multi-Audio</option>
             <option value="4K">4K Quality</option>
             <option value="1080P">1080p</option>
@@ -171,11 +176,51 @@ export default function Sidebar({
             className="sidebar-select"
             value={sort}
             onChange={e => setSort(e.target.value)}
+            title="Sort channels"
           >
             <option value="DEFAULT">Default</option>
             <option value="A-Z">A → Z</option>
             <option value="Z-A">Z → A</option>
           </select>
+        </div>
+
+        {/* Mobile / Smaller Screen Controls: Select Language & Select Category */}
+        <div className="sidebar-mobile-filters">
+          <div className="sidebar-mobile-select-group">
+            <label className="sidebar-select-tag">Select Language</label>
+            <select
+              className="sidebar-select sidebar-responsive-select"
+              value={selectedLanguage}
+              onChange={e => onLanguageSwitch && onLanguageSwitch(e.target.value)}
+            >
+              <option value="ALL">🌐 All Languages</option>
+              <option value="Telugu">🚩 Telugu</option>
+              <option value="Hindi">🇮🇳 Hindi</option>
+              <option value="English">🇬🇧 English</option>
+              <option value="Tamil">🇮🇳 Tamil</option>
+            </select>
+          </div>
+
+          <div className="sidebar-mobile-select-group">
+            <label className="sidebar-select-tag">Select Category</label>
+            <select
+              className="sidebar-select sidebar-responsive-select"
+              value={selectedCategory}
+              onChange={e => onCategorySwitch && onCategorySwitch(e.target.value)}
+            >
+              <option value="All">📁 All Categories</option>
+              <option value="News">News</option>
+              <option value="Movies">Movies</option>
+              <option value="Sports">Sports</option>
+              <option value="Music">Music</option>
+              <option value="Entertainment">Entertainment</option>
+              <option value="Kids">Kids</option>
+              <option value="General">General</option>
+              <option value="Documentary">Documentary</option>
+              <option value="Religious">Religious</option>
+              <option value="Lifestyle">Lifestyle</option>
+            </select>
+          </div>
         </div>
 
         <div className="sidebar-meta">
@@ -197,7 +242,7 @@ export default function Sidebar({
         ) : (
           slice.map(ch => (
             <ChannelItem
-              key={ch.id}
+              key={ch.id || ch.url}
               channel={ch}
               isPlaying={currentChannel?.id === ch.id || currentChannel?.url === ch.url}
               isFavorite={favorites.some(f => f.id === ch.id || f.url === ch.url)}
@@ -208,7 +253,7 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Pagination */}
+      {/* Pagination Bar firmly docked at bottom without overlap */}
       {totalPages > 1 && (
         <div className="pagination-bar">
           <button
@@ -216,7 +261,7 @@ export default function Sidebar({
             disabled={safePage === 1}
             onClick={() => setPage(p => Math.max(1, p - 1))}
           >
-            <ChevronLeft size={13} /> Prev
+            <ChevronLeft size={14} /> Prev
           </button>
           <span className="page-info">{safePage} / {totalPages}</span>
           <button
@@ -224,7 +269,7 @@ export default function Sidebar({
             disabled={safePage === totalPages}
             onClick={() => setPage(p => Math.min(totalPages, p + 1))}
           >
-            Next <ChevronRight size={13} />
+            Next <ChevronRight size={14} />
           </button>
         </div>
       )}
