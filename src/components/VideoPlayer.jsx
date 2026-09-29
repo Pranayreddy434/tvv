@@ -126,6 +126,8 @@ export default function VideoPlayer({
 
   // Swipe & Tap gesture tracking for mobile touch screens
   const touchStartRef = useRef({ x: 0, y: 0, time: 0 });
+  const touchHandledRef = useRef(0);
+  const controlsWereVisibleRef = useRef(false);
   const lastTapRef = useRef({ time: 0, x: 0, y: 0 });
   const singleTapTimerRef = useRef(null);
 
@@ -142,6 +144,14 @@ export default function VideoPlayer({
       }, customTimeout);
     }
   };
+
+  // Keep controls visible while paused
+  useEffect(() => {
+    if (!isPlaying) {
+      setControlsVisible(true);
+      clearTimeout(hideTimerRef.current);
+    }
+  }, [isPlaying]);
 
   const handleMouseLeave = () => {
     // If device was touched recently or on mobile, do not hide controls immediately
@@ -487,17 +497,21 @@ export default function VideoPlayer({
       y: touch.clientY,
       time: Date.now()
     };
-    // Touching the screen immediately ensures controls show and stay visible for 7.5s
-    showControls(7500);
+    controlsWereVisibleRef.current = controlsVisible;
   };
 
   const handleTouchEnd = (e) => {
-    // Never switch channels on touch or swipe. Delegate to tap handler.
+    touchHandledRef.current = Date.now();
     handlePlayerTap(e);
   };
 
   // Screen Tap / Click Handler - toggles controls or fullscreen, NEVER switches channels
   const handlePlayerTap = (e) => {
+    // If synthetic click arriving after a touch interaction, ignore it
+    if (e.type === 'click' && Date.now() - touchHandledRef.current < 600) {
+      return;
+    }
+
     // If interacting with interactive controls or overlay buttons, keep them open & refresh 7.5s timer!
     if (
       e.target.closest('button') ||
@@ -513,11 +527,6 @@ export default function VideoPlayer({
     }
 
     const now = Date.now();
-    // Guard against duplicate synthetic clicks fired right after touchEnd
-    if (e.type === 'click' && now - touchStartRef.current.time < 500 && touchStartRef.current.time > 0) {
-      return;
-    }
-
     // Double tap within 300ms toggles fullscreen (YouTube style), NEVER changes channel
     if (now - lastTapRef.current.time < 300) {
       clearTimeout(singleTapTimerRef.current);
@@ -529,19 +538,21 @@ export default function VideoPlayer({
     const touch = e.changedTouches ? e.changedTouches[0] : e;
     lastTapRef.current = { time: now, x: touch ? touch.clientX : 0, y: touch ? touch.clientY : 0 };
 
-    // Single tap on empty video: if controls hidden, show them for 7.5s; if already open, tap can close
+    // Check whether controls were visible when this gesture began
+    const wereVisible = e.changedTouches ? controlsWereVisibleRef.current : controlsVisible;
+
+    // Single tap on empty video:
     clearTimeout(singleTapTimerRef.current);
     singleTapTimerRef.current = setTimeout(() => {
-      setControlsVisible(prev => {
-        if (!prev) {
-          showControls(7500);
-          return true;
-        } else {
-          clearTimeout(hideTimerRef.current);
-          return false;
-        }
-      });
-    }, 240);
+      if (!wereVisible) {
+        // Controls were HIDDEN: Show them and keep them open for full 7.5 seconds!
+        showControls(7500);
+      } else {
+        // Controls were already open and user intentionally tapped empty space: hide them
+        clearTimeout(hideTimerRef.current);
+        setControlsVisible(false);
+      }
+    }, 200);
   };
 
   // Keyboard navigation & Escape key handling
