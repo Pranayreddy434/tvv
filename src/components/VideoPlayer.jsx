@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import Hls from 'hls.js';
 import {
-  Play, Pause, Volume2, VolumeX, Volume1, Maximize, PictureInPicture2,
+  Play, Pause, Volume2, VolumeX, Volume1, Maximize, Minimize, PictureInPicture2,
   AlertTriangle, ExternalLink, Copy, Star, Tv, ShieldAlert, Monitor,
   ChevronDown, Check, Languages, X, Menu, Zap, Radio, ChevronLeft, ChevronRight,
-  Share2, RotateCcw, Clock, Sparkles, Film
+  Share2, RotateCcw, RotateCw, Clock, Sparkles, Film
 } from 'lucide-react';
 import {
   AUDIO_LANGUAGES,
@@ -120,11 +120,14 @@ export default function VideoPlayer({
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isLandscapeMode, setIsLandscapeMode] = useState(false);
   const [showOSD, setShowOSD] = useState(false);
   const osdTimerRef = useRef(null);
 
-  // Swipe gesture tracking
+  // Swipe & Tap gesture tracking for mobile touch screens
   const touchStartRef = useRef({ x: 0, y: 0, time: 0 });
+  const lastTapRef = useRef({ time: 0, x: 0, y: 0 });
+  const singleTapTimerRef = useRef(null);
 
   const isPipSupported = typeof document !== 'undefined' && 'pictureInPictureEnabled' in document;
 
@@ -142,19 +145,96 @@ export default function VideoPlayer({
 
   useEffect(() => {
     const handleFsChange = () => {
-      const fs = Boolean(document.fullscreenElement);
-      setIsFullscreen(fs);
-      analytics.fullscreenToggled(fs);
-      if (fs) triggerOSD();
+      const fs = Boolean(
+        document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.mozFullScreenElement ||
+        document.msFullscreenElement ||
+        videoRef.current?.webkitDisplayingFullscreen
+      );
+      if (!fs && !document.fullscreenElement && !document.webkitFullscreenElement) {
+        setIsFullscreen(false);
+        analytics.fullscreenToggled(false);
+        if (window.screen?.orientation?.unlock) {
+          try { window.screen.orientation.unlock(); } catch (e) {}
+        }
+      } else if (fs) {
+        setIsFullscreen(true);
+        analytics.fullscreenToggled(true);
+        triggerOSD();
+      }
     };
+
     document.addEventListener('fullscreenchange', handleFsChange);
+    document.addEventListener('webkitfullscreenchange', handleFsChange);
+    document.addEventListener('mozfullscreenchange', handleFsChange);
+    document.addEventListener('MSFullscreenChange', handleFsChange);
+
+    const videoEl = videoRef.current;
+    const onWebkitBegin = () => {
+      setIsFullscreen(true);
+      analytics.fullscreenToggled(true);
+      triggerOSD();
+    };
+    const onWebkitEnd = () => {
+      setIsFullscreen(false);
+      analytics.fullscreenToggled(false);
+    };
+
+    if (videoEl) {
+      videoEl.addEventListener('webkitbeginfullscreen', onWebkitBegin);
+      videoEl.addEventListener('webkitendfullscreen', onWebkitEnd);
+    }
+
     return () => {
       document.removeEventListener('fullscreenchange', handleFsChange);
+      document.removeEventListener('webkitfullscreenchange', handleFsChange);
+      document.removeEventListener('mozfullscreenchange', handleFsChange);
+      document.removeEventListener('MSFullscreenChange', handleFsChange);
+      if (videoEl) {
+        videoEl.removeEventListener('webkitbeginfullscreen', onWebkitBegin);
+        videoEl.removeEventListener('webkitendfullscreen', onWebkitEnd);
+      }
       clearTimeout(hideTimerRef.current);
       clearTimeout(audioToastTimerRef.current);
       clearTimeout(osdTimerRef.current);
+      clearTimeout(singleTapTimerRef.current);
     };
   }, []);
+
+  // Handle physical device rotation while in fullscreen & prevent background scrolling
+  useEffect(() => {
+    const handleOrientationChange = () => {
+      if (isFullscreen) {
+        const isPortrait = window.matchMedia('(orientation: portrait)').matches || window.innerHeight > window.innerWidth;
+        setIsLandscapeMode(isPortrait);
+      }
+    };
+
+    window.addEventListener('resize', handleOrientationChange);
+    window.addEventListener('orientationchange', handleOrientationChange);
+    if (window.screen?.orientation) {
+      window.screen.orientation.addEventListener('change', handleOrientationChange);
+    }
+
+    if (isFullscreen) {
+      document.body.style.overflow = 'hidden';
+      document.documentElement.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+    }
+
+    return () => {
+      window.removeEventListener('resize', handleOrientationChange);
+      window.removeEventListener('orientationchange', handleOrientationChange);
+      if (window.screen?.orientation) {
+        window.screen.orientation.removeEventListener('change', handleOrientationChange);
+      }
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+    };
+  }, [isFullscreen]);
 
   const showAudioNotification = (label, duration = 2500) => {
     setAudioToast(label);
@@ -392,17 +472,82 @@ export default function VideoPlayer({
     const diffY = touch.clientY - touchStartRef.current.y;
     const elapsed = Date.now() - touchStartRef.current.time;
 
-    // Fast horizontal swipe (<400ms, >50px)
-    if (elapsed < 400 && Math.abs(diffX) > 50 && Math.abs(diffX) > Math.abs(diffY)) {
-      if (diffX > 0) {
-        handlePrevChannel(); // Swiped right -> Previous channel
+    // Fast swipe (>55px, <400ms) for channel surfing (adjusted for landscape rotation)
+    const delta = isLandscapeMode ? diffY : diffX;
+    const crossDelta = isLandscapeMode ? diffX : diffY;
+
+    if (elapsed < 400 && Math.abs(delta) > 55 && Math.abs(delta) > Math.abs(crossDelta) * 1.4) {
+      if (delta > 0) {
+        handlePrevChannel();
+        showAudioNotification('⏮️ Previous Channel', 1500);
       } else {
-        handleNextChannel(); // Swiped left -> Next channel
+        handleNextChannel();
+        showAudioNotification('⏭️ Next Channel', 1500);
       }
+      return;
     }
+
+    // Otherwise handle tap / double-tap for controls & fullscreen
+    handlePlayerTap(e);
   };
 
-  // Keyboard navigation
+  // Mobile Tap & Double-Tap Handler
+  const handlePlayerTap = (e) => {
+    if (
+      e.target.closest('button') ||
+      e.target.closest('select') ||
+      e.target.closest('input') ||
+      e.target.closest('.audio-track-popover')
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const touch = e.changedTouches ? e.changedTouches[0] : e;
+    const clientX = touch.clientX;
+    const clientY = touch.clientY;
+    const rect = containerRef.current?.getBoundingClientRect();
+
+    // When rotated 90 degrees, calculate relative coordinate along video's horizontal axis
+    let relPos, totalSpan;
+    if (isLandscapeMode) {
+      relPos = rect ? clientY - rect.top : 0;
+      totalSpan = rect ? rect.height : window.innerHeight;
+    } else {
+      relPos = rect ? clientX - rect.left : 0;
+      totalSpan = rect ? rect.width : window.innerWidth;
+    }
+
+    // Double tap within 300ms
+    if (now - lastTapRef.current.time < 300) {
+      clearTimeout(singleTapTimerRef.current);
+      if (relPos < totalSpan * 0.28) {
+        handlePrevChannel();
+        showAudioNotification('⏮️ Previous Channel', 1500);
+      } else if (relPos > totalSpan * 0.72) {
+        handleNextChannel();
+        showAudioNotification('⏭️ Next Channel', 1500);
+      } else {
+        toggleFullscreen();
+      }
+      lastTapRef.current = { time: 0, x: 0, y: 0 };
+      return;
+    }
+
+    lastTapRef.current = { time: now, x: clientX, y: clientY };
+
+    // Single tap: toggle controls overlay
+    clearTimeout(singleTapTimerRef.current);
+    singleTapTimerRef.current = setTimeout(() => {
+      setControlsVisible(prev => {
+        const next = !prev;
+        if (next) showControls();
+        return next;
+      });
+    }, 300);
+  };
+
+  // Keyboard navigation & Escape key handling
   useEffect(() => {
     const handleKeyDown = (e) => {
       const tag = e.target.tagName.toLowerCase();
@@ -414,6 +559,11 @@ export default function VideoPlayer({
       } else if (e.key === 'f' || e.key === 'F') {
         e.preventDefault();
         toggleFullscreen();
+      } else if (e.key === 'Escape') {
+        if (isFullscreen) {
+          e.preventDefault();
+          toggleFullscreen();
+        }
       } else if (e.key === 'm' || e.key === 'M') {
         e.preventDefault();
         toggleMute();
@@ -433,7 +583,7 @@ export default function VideoPlayer({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying, handlePrevChannel, handleNextChannel, onOpenSearch]);
+  }, [isPlaying, isFullscreen, handlePrevChannel, handleNextChannel, onOpenSearch]);
 
   const togglePlay = () => {
     if (!videoRef.current) return;
@@ -466,13 +616,105 @@ export default function VideoPlayer({
     if (gainNodeRef.current) gainNodeRef.current.gain.value = next ? 0 : volume;
   };
 
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      containerRef.current?.requestFullscreen();
+  // Robust cross-platform Fullscreen / Maximize toggle (supports iOS Safari, Android, Desktop, & YouTube-style Landscape Rotation)
+  const toggleFullscreen = useCallback(async () => {
+    const isCurrentlyFs = Boolean(
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
+      document.mozFullScreenElement ||
+      document.msFullscreenElement ||
+      videoRef.current?.webkitDisplayingFullscreen ||
+      isFullscreen
+    );
+
+    if (isCurrentlyFs) {
+      // Exit fullscreen
+      try {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+          await document.webkitExitFullscreen();
+        } else if (document.mozCancelFullScreen) {
+          await document.mozCancelFullScreen();
+        } else if (document.msExitFullscreen) {
+          await document.msExitFullscreen();
+        }
+      } catch (err) {
+        // Ignored if already exiting
+      }
+
+      // Exit iOS Safari video fullscreen if active
+      if (videoRef.current?.webkitDisplayingFullscreen && videoRef.current.webkitExitFullscreen) {
+        try {
+          videoRef.current.webkitExitFullscreen();
+        } catch (e) {}
+      }
+
+      // Unlock screen orientation
+      if (window.screen?.orientation?.unlock) {
+        try {
+          window.screen.orientation.unlock();
+        } catch (e) {}
+      }
+
+      setIsLandscapeMode(false);
+      setIsFullscreen(false);
+      analytics.fullscreenToggled(false);
     } else {
-      document.exitFullscreen();
+      // Enter Fullscreen & Rotate
+      let enteredNative = false;
+      const container = containerRef.current;
+      const video = videoRef.current;
+
+      // 1. Try standard container requestFullscreen
+      if (container?.requestFullscreen) {
+        try {
+          await container.requestFullscreen({ navigationUI: 'hide' });
+          enteredNative = true;
+        } catch (err) {
+          console.warn('Standard requestFullscreen failed:', err);
+        }
+      }
+
+      // 2. Try WebKit container requestFullscreen (Desktop Safari, older Android)
+      if (!enteredNative && container?.webkitRequestFullscreen) {
+        try {
+          container.webkitRequestFullscreen();
+          enteredNative = true;
+        } catch (err) {
+          console.warn('webkitRequestFullscreen failed:', err);
+        }
+      }
+
+      // 3. Try Screen Orientation Lock to landscape (works in Android Chrome / PWA)
+      if (window.screen?.orientation?.lock) {
+        try {
+          await window.screen.orientation.lock('landscape');
+        } catch (e1) {
+          try {
+            await window.screen.orientation.lock('landscape-primary');
+          } catch (e2) {
+            console.warn('Screen orientation lock not supported or denied:', e2);
+          }
+        }
+      }
+
+      // 4. On mobile/touch screens in portrait: activate YouTube-style CSS 90-degree landscape rotation!
+      const isPortrait = window.matchMedia('(orientation: portrait)').matches || window.innerHeight > window.innerWidth;
+      const isMobile = window.innerWidth <= 900 || ('ontouchstart' in window) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
+
+      if (isMobile && isPortrait) {
+        setIsLandscapeMode(true);
+      } else {
+        setIsLandscapeMode(false);
+      }
+
+      // 5. In all cases, activate CSS maximize (.player-wrap.is-fullscreen)
+      setIsFullscreen(true);
+      analytics.fullscreenToggled(true);
+      triggerOSD();
     }
-  };
+  }, [isFullscreen]);
 
   const togglePiP = async () => {
     try {
@@ -564,21 +806,42 @@ export default function VideoPlayer({
       <div className="player-main-column">
         <div
           ref={containerRef}
-          className={`player-wrap ${isFullscreen ? 'is-fullscreen' : ''}`}
+          className={`player-wrap ${isFullscreen ? 'is-fullscreen' : ''} ${isLandscapeMode ? 'is-rotated-landscape' : ''}`}
           onMouseMove={showControls}
           onMouseLeave={() => isPlaying && setControlsVisible(false)}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
+          onClick={handlePlayerTap}
           style={{ cursor: controlsVisible ? 'default' : 'none' }}
         >
           {/* Native Video Element */}
           <video
             ref={videoRef}
             className="player-video"
-            onClick={togglePlay}
             style={{ objectFit: aspectRatio }}
             playsInline
+            webkit-playsinline="true"
           />
+
+          {/* Center Play/Pause Overlay Indicator (Tap friendly on Mobile) */}
+          <div
+            className={`player-center-overlay ${controlsVisible || !isPlaying ? 'visible' : ''}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePlay();
+            }}
+          >
+            <button
+              className="player-center-play-btn"
+              aria-label={isPlaying ? 'Pause' : 'Play'}
+              onClick={(e) => {
+                e.stopPropagation();
+                togglePlay();
+              }}
+            >
+              {isPlaying ? <Pause size={30} fill="#fff" /> : <Play size={30} fill="#fff" style={{ marginLeft: 3 }} />}
+            </button>
+          </div>
 
           {/* Fullscreen TV Mode Clean OSD Banner (Fades out automatically) */}
           <div className={`player-osd-banner ${showOSD ? 'visible' : ''}`}>
@@ -602,7 +865,7 @@ export default function VideoPlayer({
           )}
 
           {/* Top Control Bar Overlay */}
-          <div className="player-top-bar" style={{ opacity: controlsVisible ? 1 : 0 }}>
+          <div className="player-top-bar" style={{ opacity: controlsVisible ? 1 : 0, pointerEvents: controlsVisible ? 'auto' : 'none' }}>
             <div className="player-channel-info">
               {channel.logo ? (
                 <div className="player-channel-logo">
@@ -614,9 +877,9 @@ export default function VideoPlayer({
                 </div>
               )}
               <div className="player-channel-text">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <div className="player-channel-title-row">
                   {channelNum && <span className="ch-num-pill">CH {channelNum}</span>}
-                  <span className="player-channel-name">{channel.name}</span>
+                  <span className="player-channel-name" title={channel.name}>{channel.name}</span>
                 </div>
                 <div className="player-channel-group">
                   <span>{channel.group || 'Live TV'}</span>
@@ -655,12 +918,37 @@ export default function VideoPlayer({
               <button onClick={handleShare} className="ctrl-btn" title="Share Channel">
                 {sharedToast ? <Check size={15} color="var(--accent-light)" /> : <Share2 size={15} />}
               </button>
-              <button onClick={copyUrl} className="ctrl-btn" title="Copy Stream URL">
+              <button onClick={copyUrl} className="ctrl-btn desk-only-btn" title="Copy Stream URL">
                 {copiedLink ? <Check size={15} color="var(--accent-light)" /> : <Copy size={15} />}
               </button>
-              <a href={channel.url} target="_blank" rel="noopener noreferrer" className="ctrl-btn" title="Open Stream Externally">
+              <a href={channel.url} target="_blank" rel="noopener noreferrer" className="ctrl-btn desk-only-btn" title="Open Stream Externally">
                 <ExternalLink size={15} />
               </a>
+
+              {/* Quick Screen Rotate Button in Top Bar when in Fullscreen */}
+              {isFullscreen && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsLandscapeMode(prev => !prev);
+                  }}
+                  className={`ctrl-btn rotate-btn ${isLandscapeMode ? 'active-gold' : ''}`}
+                  title={isLandscapeMode ? "Rotate to Portrait" : "Rotate to Landscape"}
+                  aria-label="Rotate Screen"
+                >
+                  <RotateCw size={15} />
+                </button>
+              )}
+
+              {/* Quick Top Corner Maximize/Minimize Button */}
+              <button
+                onClick={toggleFullscreen}
+                className={`ctrl-btn top-max-btn ${isFullscreen ? 'active-gold' : ''}`}
+                title={isFullscreen ? "Exit Fullscreen (F)" : "Maximize Screen (F)"}
+                aria-label={isFullscreen ? "Exit Fullscreen" : "Maximize Screen"}
+              >
+                {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
+              </button>
             </div>
           </div>
 
@@ -716,17 +1004,18 @@ export default function VideoPlayer({
             </div>
           )}
 
-          {/* Bottom Player Controls Bar */}
-          <div className="player-controls" style={{ opacity: controlsVisible ? 1 : 0 }}>
-            <div className="controls-row">
+          {/* Bottom Player Controls Bar - Responsive Two-Tier Layout */}
+          <div className="player-controls" style={{ opacity: controlsVisible ? 1 : 0, pointerEvents: controlsVisible ? 'auto' : 'none' }}>
+            {/* Primary Row: Playback Controls & Prominent Maximize Button */}
+            <div className="controls-row controls-row-primary">
               {/* Play / Pause */}
-              <button className="play-btn" onClick={togglePlay} aria-label={isPlaying ? 'Pause' : 'Play'}>
+              <button className="play-btn" onClick={togglePlay} aria-label={isPlaying ? 'Pause' : 'Play'} title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}>
                 {isPlaying
                   ? <Pause size={18} fill="#111" color="#111" />
                   : <Play size={18} fill="#111" color="#111" style={{ marginLeft: 2 }} />}
               </button>
 
-              {/* Previous / Next Channel Buttons (Requirement 10) */}
+              {/* Previous / Next Channel Buttons */}
               <div className="ch-nav-buttons-group">
                 <button onClick={handlePrevChannel} className="ctrl-btn prev-ch-btn" title="Previous Channel (↑)">
                   <ChevronLeft size={16} />
@@ -744,12 +1033,12 @@ export default function VideoPlayer({
 
               {/* Volume & Boost */}
               <div className="volume-group">
-                <button onClick={toggleMute} className="ctrl-btn" style={{ border: 'none', background: 'none', width: 28, height: 28 }} aria-label="Mute / Unmute">
+                <button onClick={toggleMute} className="ctrl-btn vol-btn" aria-label="Mute / Unmute" title={isMuted ? "Unmute (M)" : "Mute (M)"}>
                   {isMuted || volume === 0
-                    ? <VolumeX size={16} color="rgba(255,255,255,0.7)" />
+                    ? <VolumeX size={16} color="rgba(255,255,255,0.85)" />
                     : volume < 0.5
-                      ? <Volume1 size={16} color="rgba(255,255,255,0.7)" />
-                      : <Volume2 size={16} color={volume > 1 ? '#f43f5e' : 'rgba(255,255,255,0.7)'} />}
+                      ? <Volume1 size={16} color="rgba(255,255,255,0.85)" />
+                      : <Volume2 size={16} color={volume > 1 ? '#f43f5e' : 'rgba(255,255,255,0.85)'} />}
                 </button>
 
                 <input
@@ -781,49 +1070,130 @@ export default function VideoPlayer({
 
               <div className="spacer" />
 
-              {/* Quality Picker */}
-              {hlsLevels.length > 0 && (
-                <select
-                  className="ctrl-select player-quality-select"
-                  value={selectedLevel}
-                  onChange={e => {
-                    const lv = parseInt(e.target.value);
-                    setSelectedLevel(lv);
-                    if (hlsRef.current) hlsRef.current.currentLevel = lv;
+              {/* Screen Rotate Button when in Fullscreen (YouTube style) */}
+              {isFullscreen && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsLandscapeMode(prev => !prev);
                   }}
-                  title="Stream Resolution"
+                  className={`ctrl-btn rotate-btn ${isLandscapeMode ? 'active-gold' : ''}`}
+                  title={isLandscapeMode ? "Rotate to Portrait" : "Rotate to Landscape"}
+                  aria-label="Rotate Screen"
                 >
-                  <option value={-1}>Auto</option>
-                  {hlsLevels.map((lv, i) => (
-                    <option key={i} value={i}>{lv.height ? `${lv.height}p` : `Level ${i + 1}`}</option>
-                  ))}
-                </select>
+                  <RotateCw size={15} />
+                  <span className="rotate-btn-text">{isLandscapeMode ? "Portrait" : "Rotate"}</span>
+                </button>
               )}
 
-              {/* Dialogue Clarity */}
+              {/* Prominent Maximize / Fullscreen Button */}
+              <button
+                onClick={toggleFullscreen}
+                className={`ctrl-btn fullscreen-btn ${isFullscreen ? 'active-fullscreen' : ''}`}
+                title={isFullscreen ? "Exit Fullscreen (F)" : "Maximize Screen (F)"}
+                aria-label={isFullscreen ? "Exit Fullscreen" : "Maximize Screen"}
+              >
+                {isFullscreen ? <Minimize size={17} /> : <Maximize size={17} />}
+                <span className="fullscreen-btn-text">{isFullscreen ? 'Minimize' : 'Maximize'}</span>
+              </button>
+            </div>
+
+            {/* Secondary Row: Stream Features (Quality, Multi-Audio, Clarity, Aspect Ratio, PiP) */}
+            <div className="controls-row controls-row-secondary">
+              {/* Quality / Resolution Picker */}
+              {hlsLevels.length > 0 && (
+                <div className="ctrl-feature-item">
+                  <select
+                    className="ctrl-select player-quality-select"
+                    value={selectedLevel}
+                    onChange={e => {
+                      const lv = parseInt(e.target.value);
+                      setSelectedLevel(lv);
+                      if (hlsRef.current) hlsRef.current.currentLevel = lv;
+                    }}
+                    title="Stream Resolution"
+                  >
+                    <option value={-1}>Auto Quality</option>
+                    {hlsLevels.map((lv, i) => (
+                      <option key={i} value={i}>{lv.height ? `${lv.height}p` : `Level ${i + 1}`}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Multi-Audio Track / Language Selector */}
+              {audioTracks.length > 0 && (
+                <div className="ctrl-feature-item audio-track-container">
+                  <button
+                    onClick={() => setShowAudioModal(prev => !prev)}
+                    className={`ctrl-btn audio-track-toggle-btn ${showAudioModal ? 'active-gold' : ''}`}
+                    title="Audio Track / Language"
+                  >
+                    <Languages size={15} />
+                    <span className="ctrl-feature-label">
+                      {audioTracks[selectedAudioTrack] ? getTrackLabel(audioTracks[selectedAudioTrack], selectedAudioTrack) : 'Audio'}
+                    </span>
+                    <ChevronDown size={12} />
+                  </button>
+
+                  {showAudioModal && (
+                    <div className="audio-track-popover">
+                      <div className="audio-popover-header">
+                        <Languages size={14} color="var(--accent-light)" />
+                        <span>Select Audio Track</span>
+                        <button onClick={() => setShowAudioModal(false)} className="audio-popover-close">
+                          <X size={14} />
+                        </button>
+                      </div>
+                      <div className="audio-popover-list">
+                        {audioTracks.map((tr, idx) => {
+                          const isSelected = selectedAudioTrack === (tr.id ?? idx) || (selectedAudioTrack === -1 && idx === 0);
+                          return (
+                            <button
+                              key={tr.id ?? idx}
+                              className={`audio-track-item ${isSelected ? 'active' : ''}`}
+                              onClick={() => {
+                                handleAudioTrackChange(tr.id ?? idx);
+                                setShowAudioModal(false);
+                              }}
+                            >
+                              <span>{getTrackLabel(tr, idx)}</span>
+                              {isSelected && <Check size={14} color="var(--accent-light)" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Dialogue Clarity Boost */}
               <button
                 onClick={toggleSpeechClarity}
                 className={`ctrl-btn ${speechClarity ? 'active-gold' : ''}`}
-                title="Dialogue Clarity Boost"
+                title="Dialogue Clarity (Boost Vocal Audio)"
               >
                 <Zap size={15} />
+                <span className="ctrl-feature-label">Clarity</span>
               </button>
 
               {/* Aspect Ratio */}
               <button onClick={cycleAspect} className="ctrl-btn aspect-btn" title={`Aspect Ratio: ${aspectRatio}`}>
                 <Monitor size={15} />
+                <span className="ctrl-feature-label">{aspectRatio.toUpperCase()}</span>
               </button>
 
-              {/* PiP (Requirement 17) */}
+              {/* PiP */}
               {isPipSupported && (
                 <button onClick={togglePiP} className="ctrl-btn" title="Picture-in-Picture">
                   <PictureInPicture2 size={15} />
                 </button>
               )}
 
-              {/* Fullscreen (Requirement 9) */}
-              <button onClick={toggleFullscreen} className="ctrl-btn" title="Fullscreen (F)">
-                <Maximize size={15} />
+              {/* Reload Stream */}
+              <button onClick={loadStream} className="ctrl-btn" title="Reload Stream">
+                <RotateCcw size={15} />
               </button>
             </div>
           </div>
