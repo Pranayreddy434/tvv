@@ -4,7 +4,7 @@ import {
   Play, Pause, Volume2, VolumeX, Volume1, Maximize, Minimize, PictureInPicture2,
   AlertTriangle, ExternalLink, Copy, Star, Tv, ShieldAlert, Monitor,
   ChevronDown, Check, Languages, X, Menu, Zap, Radio, ChevronLeft, ChevronRight,
-  Share2, RotateCcw, RotateCw, Clock, Sparkles, Film
+  Share2, RotateCcw, RotateCw, Clock, Sparkles, Film, Lock, Unlock, Sun
 } from 'lucide-react';
 import {
   AUDIO_LANGUAGES,
@@ -124,6 +124,25 @@ export default function VideoPlayer({
   const [showOSD, setShowOSD] = useState(false);
   const osdTimerRef = useRef(null);
 
+  // Player Controls Lock / Unlock Mode (Requirement 1)
+  const [isLocked, setIsLocked] = useState(false);
+  const [lockedOverlayVisible, setLockedOverlayVisible] = useState(false);
+  const lockedTimerRef = useRef(null);
+
+  // Video Brightness & Gesture HUD (Requirement 1)
+  const [brightness, setBrightness] = useState(1);
+  const [gestureHUD, setGestureHUD] = useState(null);
+  const gestureHUDTimerRef = useRef(null);
+  const isSwipingGestureRef = useRef(false);
+  const swipeDeltaRef = useRef({ dx: 0, dy: 0 });
+  const retryCooldownRef = useRef(0);
+
+  const showGestureHUD = useCallback((msg, duration = 1800) => {
+    setGestureHUD(msg);
+    clearTimeout(gestureHUDTimerRef.current);
+    gestureHUDTimerRef.current = setTimeout(() => setGestureHUD(null), duration);
+  }, []);
+
   // Swipe & Tap gesture tracking for mobile touch screens
   const touchStartRef = useRef({ x: 0, y: 0, time: 0 });
   const touchHandledRef = useRef(0);
@@ -133,9 +152,10 @@ export default function VideoPlayer({
 
   const isPipSupported = typeof document !== 'undefined' && 'pictureInPictureEnabled' in document;
 
-  const CONTROLS_TIMEOUT_MS = 7500; // Increased to 7.5s timeout for comfortable mobile/desktop control access
+  const CONTROLS_TIMEOUT_MS = 7500; // 7.5s timeout for comfortable mobile/desktop control access
 
   const showControls = (customTimeout = CONTROLS_TIMEOUT_MS) => {
+    if (isLocked) return;
     setControlsVisible(true);
     clearTimeout(hideTimerRef.current);
     if (isPlaying) {
@@ -354,9 +374,23 @@ export default function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
 
-    const streamUrl = corsProxy
-      ? `https://api.allorigins.win/raw?url=${encodeURIComponent(channel.url)}`
-      : channel.url;
+    // Detect alternative stream URLs if available on channel object
+    const alternateUrls = [
+      channel.url,
+      channel.streamUrl !== channel.url ? channel.streamUrl : null,
+      channel.backupUrl,
+      Array.isArray(channel.backupUrls) ? channel.backupUrls[0] : null
+    ].filter(Boolean);
+
+    let activeStreamIndex = 0;
+    let currentTargetUrl = alternateUrls[0];
+
+    const getFormattedUrl = (urlToUse, useProxy) => {
+      if (corsProxy || useProxy) {
+        return `https://api.allorigins.win/raw?url=${encodeURIComponent(urlToUse)}`;
+      }
+      return urlToUse;
+    };
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
@@ -372,97 +406,135 @@ export default function VideoPlayer({
       }
     };
 
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 90,
-        fragLoadingTimeOut: 15000,
-        manifestLoadingTimeOut: 15000
-      });
-      hlsRef.current = hls;
-      hls.loadSource(streamUrl);
-      hls.attachMedia(video);
+    const recordStreamHealth = (status) => {
+      setStreamHealth(status);
+      try {
+        const cache = JSON.parse(localStorage.getItem('stream_health_cache') || '{}');
+        cache[channel.id || channel.url] = { status, timestamp: Date.now() };
+        localStorage.setItem('stream_health_cache', JSON.stringify(cache));
+      } catch (e) {}
+    };
 
-      hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-        setIsLoading(false);
-        setStreamHealth('online');
-        setHlsLevels(data.levels || []);
-        updateAudioTracksFromHls(hls);
-        video.play().then(() => {
-          setIsPlaying(true);
-          analytics.channelPlay(channel);
-        }).catch(() => {
-          setIsPlaying(false);
+    const applyDataSaverSetting = (hlsInstance, levels) => {
+      if (!levels || levels.length <= 1) return;
+      const mode = localStorage.getItem('iptv_streaming_mode') || 'auto';
+      if (mode === 'saver') {
+        hlsInstance.currentLevel = 0; // lowest bandwidth
+      } else if (mode === 'high') {
+        hlsInstance.currentLevel = levels.length - 1; // highest quality
+      } else if (mode === 'standard') {
+        hlsInstance.currentLevel = Math.floor(levels.length / 2);
+      } else {
+        hlsInstance.currentLevel = -1; // Auto adaptive
+      }
+    };
+
+    const initHls = (streamSourceUrl) => {
+      if (Hls.isSupported()) {
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+          backBufferLength: 90,
+          fragLoadingTimeOut: 15000,
+          manifestLoadingTimeOut: 15000
         });
-      });
+        hlsRef.current = hls;
+        hls.loadSource(streamSourceUrl);
+        hls.attachMedia(video);
 
-      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_, data) => {
-        if (data.audioTracks && data.audioTracks.length > 0) {
-          setAudioTracks([...data.audioTracks]);
-          setSelectedAudioTrack(hls.audioTrack >= 0 ? hls.audioTrack : 0);
-        }
-      });
+        hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+          setIsLoading(false);
+          recordStreamHealth('online');
+          setHlsLevels(data.levels || []);
+          applyDataSaverSetting(hls, data.levels || []);
+          updateAudioTracksFromHls(hls);
+          video.play().then(() => {
+            setIsPlaying(true);
+            analytics.channelPlay(channel);
+          }).catch(() => {
+            setIsPlaying(false);
+          });
+        });
 
-      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_, data) => {
-        setSelectedAudioTrack(data.id);
-      });
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_, data) => {
+          if (data.audioTracks && data.audioTracks.length > 0) {
+            setAudioTracks([...data.audioTracks]);
+            setSelectedAudioTrack(hls.audioTrack >= 0 ? hls.audioTrack : 0);
+          }
+        });
 
-      hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) {
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            networkRetriesRef.current += 1;
-            if (networkRetriesRef.current <= 1) {
-              setErrorMsg('Connection buffering, retrying...');
-              hls.startLoad();
-            } else if (!triedProxyRef.current && !corsProxy) {
-              triedProxyRef.current = true;
-              setErrorMsg('Direct stream restricted, trying CORS proxy fallback...');
-              const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(channel.url)}`;
-              hls.loadSource(proxyUrl);
-              hls.startLoad();
+        hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_, data) => {
+          setSelectedAudioTrack(data.id);
+        });
+
+        hls.on(Hls.Events.ERROR, (_, data) => {
+          if (data.fatal) {
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+              networkRetriesRef.current += 1;
+              if (networkRetriesRef.current <= 1) {
+                setErrorMsg('Connecting to stream, retrying...');
+                recordStreamHealth('checking');
+                hls.startLoad();
+              } else if (activeStreamIndex < alternateUrls.length - 1) {
+                // Try next alternate URL if available
+                activeStreamIndex += 1;
+                currentTargetUrl = alternateUrls[activeStreamIndex];
+                setErrorMsg('Connecting to alternate broadcast source...');
+                hls.loadSource(currentTargetUrl);
+                hls.startLoad();
+              } else if (!triedProxyRef.current && !corsProxy) {
+                // Try CORS Proxy fallback
+                triedProxyRef.current = true;
+                setErrorMsg('Trying secure proxy fallback...');
+                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(currentTargetUrl)}`;
+                hls.loadSource(proxyUrl);
+                hls.startLoad();
+              } else {
+                setHasError(true);
+                recordStreamHealth('offline');
+                setErrorMsg('Stream temporarily unavailable. Broadcast source is offline or geo-restricted.');
+                setIsLoading(false);
+                hls.destroy();
+              }
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              recordStreamHealth('checking');
+              hls.recoverMediaError();
             } else {
               setHasError(true);
-              setStreamHealth('offline');
-              setErrorMsg('Stream unreachable or restricted. Please select another channel or browse categories.');
+              recordStreamHealth('offline');
+              setErrorMsg('Unable to play this broadcast format.');
+              analytics.channelError(channel, data.details || 'HLS Fatal Error');
               setIsLoading(false);
               hls.destroy();
             }
-          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-            hls.recoverMediaError();
-          } else {
-            setHasError(true);
-            setStreamHealth('offline');
-            setErrorMsg('Unable to play this channel format.');
-            analytics.channelError(channel, data.details || 'HLS Fatal Error');
-            setIsLoading(false);
-            hls.destroy();
           }
-        }
-      });
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = streamUrl;
-      video.addEventListener('loadedmetadata', () => {
-        setIsLoading(false);
-        setStreamHealth('online');
-        video.play().then(() => {
-          setIsPlaying(true);
-          analytics.channelPlay(channel);
-        }).catch(() => {});
-      });
-      video.addEventListener('error', () => {
+        });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = streamSourceUrl;
+        video.addEventListener('loadedmetadata', () => {
+          setIsLoading(false);
+          recordStreamHealth('online');
+          video.play().then(() => {
+            setIsPlaying(true);
+            analytics.channelPlay(channel);
+          }).catch(() => {});
+        });
+        video.addEventListener('error', () => {
+          setHasError(true);
+          recordStreamHealth('offline');
+          setErrorMsg('Stream format not supported in this browser.');
+          setIsLoading(false);
+          analytics.channelError(channel, 'HTML5 Video Error');
+        });
+      } else {
         setHasError(true);
-        setStreamHealth('offline');
-        setErrorMsg('Stream format not supported in this browser.');
+        recordStreamHealth('offline');
+        setErrorMsg('HLS playback is not supported in this browser.');
         setIsLoading(false);
-        analytics.channelError(channel, 'HTML5 Video Error');
-      });
-    } else {
-      setHasError(true);
-      setStreamHealth('offline');
-      setErrorMsg('HLS playback is not supported in this browser.');
-      setIsLoading(false);
-    }
+      }
+    };
+
+    initHls(getFormattedUrl(currentTargetUrl, false));
   }, [channel, corsProxy]);
 
   useEffect(() => {
@@ -489,7 +561,18 @@ export default function VideoPlayer({
     onSelectChannel(allChannels[nextIdx]);
   }, [allChannels, currentIndex, onSelectChannel]);
 
-  // Mobile touch and tap handling (Clean & Safe: NEVER switch channels on screen touch)
+  // Manual Retry with 2.5s Cooldown (Requirement 3)
+  const handleManualRetry = () => {
+    const now = Date.now();
+    if (now - retryCooldownRef.current < 2500) {
+      showGestureHUD('⏳ Please wait a moment before retrying…');
+      return;
+    }
+    retryCooldownRef.current = now;
+    loadStream();
+  };
+
+  // Mobile Touch Gestures (Requirement 1)
   const handleTouchStart = (e) => {
     const touch = e.touches[0];
     touchStartRef.current = {
@@ -498,21 +581,95 @@ export default function VideoPlayer({
       time: Date.now()
     };
     controlsWereVisibleRef.current = controlsVisible;
+    isSwipingGestureRef.current = false;
+    swipeDeltaRef.current = { dx: 0, dy: 0 };
+  };
+
+  const handleTouchMove = (e) => {
+    if (isLocked) return;
+    if (!touchStartRef.current.time) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - touchStartRef.current.x;
+    const dy = touch.clientY - touchStartRef.current.y;
+    swipeDeltaRef.current = { dx, dy };
+
+    // Vertical drag on player: Volume on right, Brightness on left
+    if (Math.abs(dy) > 28 && Math.abs(dy) > Math.abs(dx) * 1.5) {
+      isSwipingGestureRef.current = true;
+      const rect = containerRef.current?.getBoundingClientRect();
+      const isLeftSide = rect ? (touchStartRef.current.x < rect.left + rect.width / 2) : false;
+
+      if (isLeftSide) {
+        // Brightness adjust: drag up increases, drag down decreases
+        const step = -dy / 250;
+        const newBrightness = Math.max(0.35, Math.min(1.5, brightness + step * 0.04));
+        setBrightness(newBrightness);
+        showGestureHUD(`☀️ Brightness: ${Math.round(newBrightness * 100)}%`);
+      } else {
+        // Volume adjust
+        const step = -dy / 250;
+        const newVol = Math.max(0, Math.min(1.0, (isMuted ? 0 : volume) + step * 0.05));
+        handleVolumeChange(newVol);
+        showGestureHUD(`🔊 Volume: ${Math.round(newVol * 100)}%`);
+      }
+    }
   };
 
   const handleTouchEnd = (e) => {
     touchHandledRef.current = Date.now();
+    const touchDuration = Date.now() - touchStartRef.current.time;
+    const { dx, dy } = swipeDeltaRef.current;
+
+    if (isLocked) {
+      // Tap reveals Unlock button when controls are locked
+      setLockedOverlayVisible(true);
+      clearTimeout(lockedTimerRef.current);
+      lockedTimerRef.current = setTimeout(() => setLockedOverlayVisible(false), 3500);
+      return;
+    }
+
+    // Horizontal Swipe Channel Change (Requirement 1: Swipe left/right → previous/next channel)
+    if (
+      !isSwipingGestureRef.current &&
+      Math.abs(dx) > 75 &&
+      Math.abs(dx) > Math.abs(dy) * 2.2 &&
+      touchDuration < 600
+    ) {
+      if (dx < 0) {
+        // Swiped Left -> Next Channel
+        handleNextChannel();
+        const nextCh = allChannels[(currentIndex + 1) % allChannels.length];
+        if (nextCh) showGestureHUD(`⏭ ${nextCh.name}`);
+      } else {
+        // Swiped Right -> Previous Channel
+        handlePrevChannel();
+        const prevCh = allChannels[(currentIndex - 1 + allChannels.length) % allChannels.length];
+        if (prevCh) showGestureHUD(`⏮ ${prevCh.name}`);
+      }
+      return;
+    }
+
+    if (isSwipingGestureRef.current) {
+      isSwipingGestureRef.current = false;
+      return;
+    }
+
     handlePlayerTap(e);
   };
 
-  // Screen Tap / Click Handler - toggles controls or fullscreen, NEVER switches channels
+  // Screen Tap / Click Handler: Double-tap toggles Play/Pause, Single-tap toggles Controls
   const handlePlayerTap = (e) => {
-    // If synthetic click arriving after a touch interaction, ignore it
+    if (isLocked) {
+      setLockedOverlayVisible(true);
+      clearTimeout(lockedTimerRef.current);
+      lockedTimerRef.current = setTimeout(() => setLockedOverlayVisible(false), 3500);
+      return;
+    }
+
     if (e.type === 'click' && Date.now() - touchHandledRef.current < 600) {
       return;
     }
 
-    // If interacting with interactive controls or overlay buttons, keep them open & refresh 7.5s timer!
     if (
       e.target.closest('button') ||
       e.target.closest('select') ||
@@ -527,32 +684,29 @@ export default function VideoPlayer({
     }
 
     const now = Date.now();
-    // Double tap within 300ms toggles fullscreen (YouTube style), NEVER changes channel
+    // Double tap within 300ms toggles Play/Pause (Requirement 1: Double tap on video → play/pause)
     if (now - lastTapRef.current.time < 300) {
       clearTimeout(singleTapTimerRef.current);
       lastTapRef.current = { time: 0, x: 0, y: 0 };
-      toggleFullscreen();
+      togglePlay();
+      showGestureHUD(isPlaying ? '⏸ Paused' : '▶ Playing');
       return;
     }
 
     const touch = e.changedTouches ? e.changedTouches[0] : e;
     lastTapRef.current = { time: now, x: touch ? touch.clientX : 0, y: touch ? touch.clientY : 0 };
 
-    // Check whether controls were visible when this gesture began
     const wereVisible = e.changedTouches ? controlsWereVisibleRef.current : controlsVisible;
 
-    // Single tap on empty video:
     clearTimeout(singleTapTimerRef.current);
     singleTapTimerRef.current = setTimeout(() => {
       if (!wereVisible) {
-        // Controls were HIDDEN: Show them and keep them open for full 7.5 seconds!
         showControls(7500);
       } else {
-        // Controls were already open and user intentionally tapped empty space: hide them
         clearTimeout(hideTimerRef.current);
         setControlsVisible(false);
       }
-    }, 200);
+    }, 220);
   };
 
   // Keyboard navigation & Escape key handling
@@ -812,47 +966,77 @@ export default function VideoPlayer({
       <div className="player-main-column">
         <div
           ref={containerRef}
-          className={`player-wrap ${isFullscreen ? 'is-fullscreen' : ''} ${isLandscapeMode ? 'is-rotated-landscape' : ''}`}
-          onMouseMove={() => showControls(7500)}
+          className={`player-wrap ${isFullscreen ? 'is-fullscreen' : ''} ${isLandscapeMode ? 'is-rotated-landscape' : ''} ${isLocked ? 'is-locked' : ''}`}
+          onMouseMove={() => !isLocked && showControls(7500)}
           onMouseLeave={handleMouseLeave}
           onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
           onClick={handlePlayerTap}
-          style={{ cursor: controlsVisible ? 'default' : 'none' }}
+          style={{ cursor: controlsVisible && !isLocked ? 'default' : 'none' }}
         >
           {/* Native Video Element */}
           <video
             ref={videoRef}
             className="player-video"
-            style={{ objectFit: aspectRatio }}
+            style={{ objectFit: aspectRatio, filter: `brightness(${brightness})` }}
             playsInline
             webkit-playsinline="true"
           />
 
+          {/* Player Gesture HUD Toast (Volume, Brightness, Channel) */}
+          {gestureHUD && (
+            <div className="player-gesture-hud">
+              <span>{gestureHUD}</span>
+            </div>
+          )}
+
+          {/* Controls Locked Floating Pill Overlay (Requirement 1) */}
+          {isLocked && (
+            <div className={`player-lock-overlay ${lockedOverlayVisible ? 'visible' : ''}`}>
+              <button
+                className="player-unlock-pill-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsLocked(false);
+                  setLockedOverlayVisible(false);
+                  showControls(7500);
+                  showGestureHUD('🔓 Controls Unlocked');
+                }}
+                aria-label="Unlock Player Controls"
+              >
+                <Unlock size={17} />
+                <span>Controls Locked • Tap to Unlock</span>
+              </button>
+            </div>
+          )}
+
           {/* Center Play/Pause Overlay Indicator (Tap friendly on Mobile) */}
-          <div
-            className={`player-center-overlay ${controlsVisible || !isPlaying ? 'visible' : ''}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              togglePlay();
-              showControls(7500);
-            }}
-          >
-            <button
-              className="player-center-play-btn"
-              aria-label={isPlaying ? 'Pause' : 'Play'}
+          {!isLocked && (
+            <div
+              className={`player-center-overlay ${controlsVisible || !isPlaying ? 'visible' : ''}`}
               onClick={(e) => {
                 e.stopPropagation();
                 togglePlay();
                 showControls(7500);
               }}
             >
-              {isPlaying ? <Pause size={30} fill="#fff" /> : <Play size={30} fill="#fff" style={{ marginLeft: 3 }} />}
-            </button>
-          </div>
+              <button
+                className="player-center-play-btn"
+                aria-label={isPlaying ? 'Pause' : 'Play'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePlay();
+                  showControls(7500);
+                }}
+              >
+                {isPlaying ? <Pause size={30} fill="#fff" /> : <Play size={30} fill="#fff" style={{ marginLeft: 3 }} />}
+              </button>
+            </div>
+          )}
 
           {/* Fullscreen TV Mode Clean OSD Banner (Fades out automatically) */}
-          <div className={`player-osd-banner ${showOSD ? 'visible' : ''}`}>
+          <div className={`player-osd-banner ${showOSD && !isLocked ? 'visible' : ''}`}>
             <div className="osd-content">
               {channelNum && <span className="ch-num-pill">CH {channelNum}</span>}
               <span className="osd-channel-name">{channel.name}</span>
@@ -875,9 +1059,9 @@ export default function VideoPlayer({
           {/* Top Control Bar Overlay */}
           <div
             className="player-top-bar"
-            onTouchStart={() => showControls(7500)}
-            onPointerDown={() => showControls(7500)}
-            style={{ opacity: controlsVisible ? 1 : 0, pointerEvents: controlsVisible ? 'auto' : 'none' }}
+            onTouchStart={() => !isLocked && showControls(7500)}
+            onPointerDown={() => !isLocked && showControls(7500)}
+            style={{ opacity: controlsVisible && !isLocked ? 1 : 0, pointerEvents: controlsVisible && !isLocked ? 'auto' : 'none' }}
           >
             <div className="player-channel-info">
               {channel.logo ? (
@@ -912,6 +1096,21 @@ export default function VideoPlayer({
             </div>
 
             <div className="player-top-actions">
+              {/* Player Controls Lock Toggle (Requirement 1) */}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsLocked(true);
+                  setControlsVisible(false);
+                  showGestureHUD('🔒 Controls Locked');
+                }}
+                className="ctrl-btn"
+                title="Lock Player Controls"
+                aria-label="Lock Controls"
+              >
+                <Lock size={15} />
+              </button>
+
               {onOpenChannels && (
                 <button onClick={onOpenChannels} className="ctrl-btn" title="Channels Drawer">
                   <Menu size={15} />
@@ -980,7 +1179,7 @@ export default function VideoPlayer({
             </div>
           )}
 
-          {/* Automatic Stream Error Handling (Requirement 13) */}
+          {/* Automatic Stream Error Handling (Requirement 3 & 13) */}
           {hasError && (
             <div className="player-error">
               <AlertTriangle size={46} color="#f43f5e" />
@@ -991,7 +1190,7 @@ export default function VideoPlayer({
                 </p>
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-                <button onClick={loadStream} className="btn-primary">
+                <button onClick={handleManualRetry} className="btn-primary">
                   <RotateCcw size={15} />
                   <span>Retry Stream</span>
                 </button>
@@ -1020,9 +1219,9 @@ export default function VideoPlayer({
           {/* Bottom Player Controls Bar - Responsive Two-Tier Layout */}
           <div
             className="player-controls"
-            onTouchStart={() => showControls(7500)}
-            onPointerDown={() => showControls(7500)}
-            style={{ opacity: controlsVisible ? 1 : 0, pointerEvents: controlsVisible ? 'auto' : 'none' }}
+            onTouchStart={() => !isLocked && showControls(7500)}
+            onPointerDown={() => !isLocked && showControls(7500)}
+            style={{ opacity: controlsVisible && !isLocked ? 1 : 0, pointerEvents: controlsVisible && !isLocked ? 'auto' : 'none' }}
           >
             {/* Primary Row: Playback Controls & Prominent Maximize Button */}
             <div className="controls-row controls-row-primary">

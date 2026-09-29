@@ -1,18 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { Hash, X, Play, Delete, ArrowRight } from 'lucide-react';
+import { Hash, X, Play, Delete, ArrowRight, Star, Clock, ChevronLeft, ChevronRight } from 'lucide-react';
 import { analytics } from '../services/analyticsService';
 
 export default function ChannelNumberDialer({
   isOpen,
   onClose,
   allChannels = [],
-  onSelectChannel
+  onSelectChannel,
+  favorites = [],
+  history = []
 }) {
   const [dialed, setDialed] = useState('');
 
   const num = parseInt(dialed, 10);
   const matchedChannel = !isNaN(num)
-    ? allChannels.find(c => c.channelNumber === num)
+    ? allChannels.find(c => c.channelNumber === num) || allChannels[num - 1] || allChannels.find((_, idx) => (100 + idx) === num)
     : null;
 
   const handleDigit = (digit) => {
@@ -20,14 +22,14 @@ export default function ChannelNumberDialer({
       const next = dialed + digit;
       setDialed(next);
       const targetNum = parseInt(next, 10);
-      const ch = allChannels.find(c => c.channelNumber === targetNum);
+      const ch = allChannels.find(c => c.channelNumber === targetNum) || allChannels[targetNum - 1];
       if (ch && next.length === 3) {
         setTimeout(() => {
           onSelectChannel(ch);
           analytics.channelNumberDialed(targetNum);
           onClose();
           setDialed('');
-        }, 400);
+        }, 350);
       }
     }
   };
@@ -39,7 +41,7 @@ export default function ChannelNumberDialer({
   const handleTune = () => {
     if (matchedChannel) {
       onSelectChannel(matchedChannel);
-      analytics.channelNumberDialed(matchedChannel.channelNumber);
+      analytics.channelNumberDialed(matchedChannel.channelNumber || num);
       onClose();
       setDialed('');
     }
@@ -70,7 +72,7 @@ export default function ChannelNumberDialer({
   return (
     <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal-box channel-dialer-modal">
-        <button onClick={onClose} className="modal-close">
+        <button onClick={onClose} className="modal-close" aria-label="Close Dialer">
           <X size={18} />
         </button>
 
@@ -92,7 +94,7 @@ export default function ChannelNumberDialer({
             ) : dialed ? (
               <span className="preview-notfound">No channel #{dialed}</span>
             ) : (
-              <span className="preview-prompt">Type 1-3 digits or use keypad below</span>
+              <span className="preview-prompt">Type 1-3 digits (e.g. 101) & press Enter</span>
             )}
           </div>
         </div>
@@ -112,6 +114,7 @@ export default function ChannelNumberDialer({
             className="keypad-digit-btn fn"
             onClick={handleBackspace}
             title="Delete digit"
+            aria-label="Delete digit"
           >
             <Delete size={18} />
           </button>
@@ -126,16 +129,65 @@ export default function ChannelNumberDialer({
             onClick={handleTune}
             disabled={!matchedChannel}
             title="Tune into channel"
+            aria-label="Tune into channel"
           >
             <ArrowRight size={20} />
           </button>
         </div>
 
         {matchedChannel && (
-          <button onClick={handleTune} className="btn-primary" style={{ width: '100%', marginTop: 14 }}>
+          <button onClick={handleTune} className="btn-primary" style={{ width: '100%', marginTop: 12 }}>
             <Play size={16} fill="currentColor" />
             <span>Tune to {matchedChannel.name}</span>
           </button>
+        )}
+
+        {/* Quick Channel Pills for Favorites and Recent */}
+        {(favorites.length > 0 || history.length > 0) && (
+          <div className="dialer-shortcuts-tray">
+            {favorites.length > 0 && (
+              <div className="dialer-quick-row">
+                <span className="dialer-quick-label"><Star size={11} color="#F59E0B" /> Favorites:</span>
+                <div className="dialer-quick-pills">
+                  {favorites.slice(0, 4).map(fav => (
+                    <button
+                      key={fav.id || fav.url}
+                      className="dialer-quick-pill"
+                      onClick={() => {
+                        onSelectChannel(fav);
+                        onClose();
+                      }}
+                    >
+                      {fav.channelNumber ? `#${fav.channelNumber} ` : ''}{fav.name.split(' ')[0]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {history.length > 0 && (
+              <div className="dialer-quick-row">
+                <span className="dialer-quick-label"><Clock size={11} /> Recent:</span>
+                <div className="dialer-quick-pills">
+                  {history.slice(0, 4).map(h => {
+                    const ch = h.channel || h;
+                    return (
+                      <button
+                        key={ch.id || ch.url}
+                        className="dialer-quick-pill"
+                        onClick={() => {
+                          onSelectChannel(ch);
+                          onClose();
+                        }}
+                      >
+                        {ch.channelNumber ? `#${ch.channelNumber} ` : ''}{ch.name.split(' ')[0]}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

@@ -14,6 +14,7 @@ import ChannelNumberDialer from './components/ChannelNumberDialer';
 import PlaylistModal from './components/PlaylistModal';
 import ShortcutsModal from './components/ShortcutsModal';
 import MobileBottomNav from './components/MobileBottomNav';
+import MiniPlayer from './components/MiniPlayer';
 import EmptyState from './components/EmptyState';
 
 import { parseM3U } from './services/m3uParser';
@@ -23,7 +24,7 @@ import { analytics } from './services/analyticsService';
 
 import {
   Tv, Star, Film, Radio, Sparkles, Newspaper, Clapperboard,
-  Music, Trophy, Baby, HeartHandshake, Clock, Compass, Shield, Globe
+  Music, Trophy, Baby, HeartHandshake, Clock, Compass, Shield, Globe, Flame
 } from 'lucide-react';
 import './index.css';
 
@@ -92,6 +93,7 @@ export default function App() {
 
   // Channel Selection & Persistence
   const [currentChannel, setCurrentChannel] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(true);
   const [lastWatchedChannel, setLastWatchedChannel] = useState(() => getLSJson('lastWatchedChannel', null));
   const [favorites, setFavorites] = useState(() => getLSJson('favChannels', []));
   const [history, setHistory] = useState(() => getLSJson('chHistory', []));
@@ -189,21 +191,38 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [playlistUrl, loadPlaylist]);
 
-  // Play a channel
+  // Play a channel with local view counter for Trending feature (Requirement 7)
   const handleSelectChannel = useCallback((ch) => {
     if (!ch) return;
     setCurrentChannel(ch);
     setLastWatchedChannel(ch);
+    setIsPlaying(true);
     setActiveNav('live');
 
+    try {
+      const views = getLSJson('iptv_channel_views', {});
+      const chKey = ch.id || ch.url;
+      views[chKey] = (views[chKey] || 0) + 1;
+      localStorage.setItem('iptv_channel_views', JSON.stringify(views));
+    } catch (e) {}
+
     setHistory(prev => {
-      const filtered = prev.filter(h => h.id !== ch.id && h.url !== ch.url);
-      return [ch, ...filtered].slice(0, 20);
+      const filtered = prev.filter(h => {
+        const id = h.id || h.url;
+        const targetId = ch.id || ch.url;
+        return id !== targetId;
+      });
+      const entry = { ...ch, lastWatched: Date.now() };
+      return [entry, ...filtered].slice(0, 20);
     });
 
     if (window.innerWidth < 1024) {
       setSidebarCollapsed(true);
     }
+  }, []);
+
+  const handleRemoveHistoryItem = useCallback((ch) => {
+    setHistory(prev => prev.filter(h => (h.id || h.url) !== (ch.id || ch.url)));
   }, []);
 
   // Toggle favorite
@@ -352,14 +371,89 @@ export default function App() {
     return allChannels.filter(c => c.isNew);
   }, [allChannels]);
 
-  const recommendedChannels = useMemo(() => {
-    const target = currentChannel || lastWatchedChannel || featuredChannel;
-    if (!target) return allChannels.slice(0, 10);
-    return allChannels
-      .filter(c => c.id !== target.id)
-      .filter(c => c.language === target.language || c.group === target.group)
+  // Locally calculated Trending / Most Watched (Requirement 7)
+  const trendingChannels = useMemo(() => {
+    try {
+      const views = getLSJson('iptv_channel_views', {});
+      const entries = Object.entries(views);
+      if (entries.length === 0) return [];
+      const viewMap = new Map(entries);
+      const scored = allChannels
+        .filter(c => viewMap.has(c.id || c.url))
+        .map(c => ({
+          channel: c,
+          count: viewMap.get(c.id || c.url) || 0
+        }))
+        .sort((a, b) => b.count - a.count);
+
+      return scored.slice(0, 14).map(s => s.channel);
+    } catch {
+      return [];
+    }
+  }, [allChannels, history]);
+
+  // Dedicated Telugu rails (Requirement 11: Telugu-First Experience)
+  const teluguNewsChannels = useMemo(() => {
+    return teluguChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('news') || n.includes('news') || n.includes('tv9') || n.includes('ntv') || n.includes('abn') || n.includes('v6') || n.includes('10tv') || n.includes('sakshi') || n.includes('t news') || n.includes('prime9');
+    });
+  }, [teluguChannels]);
+
+  const teluguMovieChannels = useMemo(() => {
+    return teluguChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('movie') || g.includes('cinema') || n.includes('cinema') || n.includes('movie') || n.includes('tollywood') || n.includes('gemini movies') || n.includes('star maa movies');
+    });
+  }, [teluguChannels]);
+
+  const teluguMusicChannels = useMemo(() => {
+    return teluguChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('music') || n.includes('music') || n.includes('musix') || n.includes('beats');
+    });
+  }, [teluguChannels]);
+
+  const teluguDevotionalChannels = useMemo(() => {
+    return teluguChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('religio') || g.includes('spirit') || g.includes('devotional') || n.includes('bhakthi') || n.includes('svbc') || n.includes('subhavaartha');
+    });
+  }, [teluguChannels]);
+
+  // Smart Recommendations with "Because you watched..." (Requirement 8)
+  const recommendationContext = useMemo(() => {
+    const target = currentChannel || lastWatchedChannel || (history.length > 0 ? history[0] : null);
+    if (!target) {
+      return {
+        title: 'Recommended Channels',
+        subtitle: 'Handpicked popular broadcasts for your viewing pleasure',
+        channels: allChannels.slice(0, 12)
+      };
+    }
+
+    const targetLang = target.language;
+    const targetGroup = (target.group || '').toLowerCase();
+
+    const matched = allChannels
+      .filter(c => (c.id || c.url) !== (target.id || target.url))
+      .filter(c => {
+        const sameLang = targetLang && matchesLanguage(c, targetLang);
+        const sameGroup = targetGroup && (c.group || '').toLowerCase() === targetGroup;
+        return sameLang || sameGroup;
+      })
       .slice(0, 12);
-  }, [allChannels, currentChannel, lastWatchedChannel, featuredChannel]);
+
+    return {
+      title: `Because you watched ${target.name}`,
+      subtitle: `More top ${target.language || ''} ${target.group || 'Live TV'} channels you might like`,
+      channels: matched.length > 0 ? matched : allChannels.slice(0, 12)
+    };
+  }, [allChannels, currentChannel, lastWatchedChannel, history]);
 
   // General Filter for Categories / Directory tab
   const categoryFilteredChannels = useMemo(() => {
@@ -460,12 +554,31 @@ export default function App() {
                 onShareChannel={handleShareChannel}
               />
 
-              {/* Continue Watching Banner */}
-              {lastWatchedChannel && (
+              {/* Continue Watching Section (Requirement 6) */}
+              {(history.length > 0 || lastWatchedChannel) && (
                 <ContinueWatchingRow
+                  history={history}
                   lastWatched={lastWatchedChannel}
                   onPlayChannel={handleSelectChannel}
-                  onDismiss={() => setLastWatchedChannel(null)}
+                  onRemoveItem={handleRemoveHistoryItem}
+                  onClearAll={handleClearHistory}
+                />
+              )}
+
+              {/* Locally Calculated Trending / Most Watched (Requirement 7) */}
+              {trendingChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="🔥 Trending Channels"
+                  icon={Flame}
+                  subtitle="Most watched broadcasts based on your local viewing activity"
+                  channels={trendingChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  badge="Trending"
                 />
               )}
 
@@ -500,12 +613,12 @@ export default function App() {
                   onToggleFavorite={handleToggleFavorite}
                   onOpenDetails={(ch) => setShowDetailsChannel(ch)}
                   onShareChannel={handleShareChannel}
-                  badge="Trending"
+                  badge="Popular"
                   onViewAll={() => { setSelectedCategory('Hindi'); setActiveNav('categories'); }}
                 />
               )}
 
-              {/* Telugu Live TV Section */}
+              {/* Telugu Live TV Section (Requirement 11: Telugu-First Experience) */}
               {teluguChannels.length > 0 && (
                 <ChannelSectionRow
                   title="Telugu Live TV"
@@ -518,7 +631,74 @@ export default function App() {
                   onToggleFavorite={handleToggleFavorite}
                   onOpenDetails={(ch) => setShowDetailsChannel(ch)}
                   onShareChannel={handleShareChannel}
-                  badge="Popular"
+                  badge="Telugu"
+                  onViewAll={() => { setSelectedCategory('Telugu'); setActiveNav('categories'); }}
+                />
+              )}
+
+              {/* Dedicated Telugu Sub-rails: News, Movies, Music, Devotional */}
+              {teluguNewsChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="📰 Telugu News 24/7"
+                  icon={Newspaper}
+                  subtitle="Live breaking bulletins, political debates, and AP & Telangana ground updates"
+                  channels={teluguNewsChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  badge="Live News"
+                  onViewAll={() => { setSelectedCategory('Telugu'); setActiveNav('categories'); }}
+                />
+              )}
+
+              {teluguMovieChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="🎬 Telugu Movies & Cinema"
+                  icon={Clapperboard}
+                  subtitle="Tollywood blockbusters, golden era cinema, and nonstop film entertainment"
+                  channels={teluguMovieChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  badge="Movies"
+                  onViewAll={() => { setSelectedCategory('Telugu'); setActiveNav('categories'); }}
+                />
+              )}
+
+              {teluguMusicChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="🎵 Telugu Music & Chartbusters"
+                  icon={Music}
+                  subtitle="Tollywood soundtracks, melodies, and non-stop music countdowns"
+                  channels={teluguMusicChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  onViewAll={() => { setSelectedCategory('Telugu'); setActiveNav('categories'); }}
+                />
+              )}
+
+              {teluguDevotionalChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="🙏 Telugu Devotional & Darshan"
+                  icon={HeartHandshake}
+                  subtitle="Sacred Tirumala darshans, daily rituals, and spiritual discourses"
+                  channels={teluguDevotionalChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
                   onViewAll={() => { setSelectedCategory('Telugu'); setActiveNav('categories'); }}
                 />
               )}
@@ -716,12 +896,12 @@ export default function App() {
                 />
               )}
 
-              {/* Recommended Channels */}
+              {/* Smart Recommendations with "Because you watched..." (Requirement 8) */}
               <ChannelSectionRow
-                title="Recommended Channels"
+                title={recommendationContext.title}
                 icon={Compass}
-                subtitle="You may also like based on your viewing preferences"
-                channels={recommendedChannels}
+                subtitle={recommendationContext.subtitle}
+                channels={recommendationContext.channels}
                 currentChannel={currentChannel}
                 onSelectChannel={handleSelectChannel}
                 favorites={favorites}
@@ -831,13 +1011,22 @@ export default function App() {
         </main>
       </div>
 
-      {/* Sticky Bottom Navigation for Mobile Touch Screens (Requirement 19) */}
+      {/* Persistent Mini Player when viewing other screens (Requirement 2) */}
+      {currentChannel && activeNav !== 'live' && (
+        <MiniPlayer
+          channel={currentChannel}
+          isPlaying={isPlaying}
+          onTogglePlay={() => setIsPlaying(prev => !prev)}
+          onClose={() => setCurrentChannel(null)}
+          onExpand={() => setActiveNav('live')}
+        />
+      )}
+
+      {/* Sticky Bottom Navigation for Mobile Touch Screens (Requirement 16) */}
       <MobileBottomNav
         activeNav={activeNav}
         onNavigate={(nav) => {
-          if (nav === 'search') {
-            setShowSearchModal(true);
-          } else if (nav === 'settings') {
+          if (nav === 'settings') {
             setShowSettingsModal(true);
           } else {
             setActiveNav(nav);
@@ -894,6 +1083,8 @@ export default function App() {
         onClose={() => setShowDialerModal(false)}
         allChannels={allChannels}
         onSelectChannel={handleSelectChannel}
+        favorites={favorites}
+        history={history}
       />
 
       {/* 5. M3U Playlist Modal */}
