@@ -355,7 +355,7 @@ export default function VideoPlayer({
 
   // Load HLS Stream
   const loadStream = useCallback(() => {
-    if (!channel?.url) return;
+    if (!channel?.url && !channel?.streamUrl) return;
     setIsLoading(true);
     setHasError(false);
     setErrorMsg('');
@@ -374,13 +374,22 @@ export default function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
 
-    // Detect alternative stream URLs if available on channel object
-    const alternateUrls = [
+    // A broadcaster can rotate its CDN URL without notice. Keep every distinct
+    // source supplied for a channel and move to the next one on a fatal network
+    // error.  The previous implementation only used the first backup URL.
+    const alternateUrls = [...new Set([
+      channel.streamUrl,
       channel.url,
-      channel.streamUrl !== channel.url ? channel.streamUrl : null,
       channel.backupUrl,
-      Array.isArray(channel.backupUrls) ? channel.backupUrls[0] : null
-    ].filter(Boolean);
+      ...(Array.isArray(channel.backupUrls) ? channel.backupUrls : [])
+    ].filter(url => typeof url === 'string' && url.trim()))];
+
+    if (alternateUrls.length === 0) {
+      setHasError(true);
+      setErrorMsg('This channel does not have a playable stream URL.');
+      setIsLoading(false);
+      return;
+    }
 
     let activeStreamIndex = 0;
     let currentTargetUrl = alternateUrls[0];
@@ -434,9 +443,24 @@ export default function VideoPlayer({
         const hls = new Hls({
           enableWorker: true,
           lowLatencyMode: true,
-          backBufferLength: 90,
+          backBufferLength: 30,
+          maxBufferLength: 8,
+          maxMaxBufferLength: 16,
+          maxBufferSize: 30 * 1000 * 1000,
+          initialLiveManifestSize: 1,
+          startFragPrefetch: true,
+          // Some live broadcasters take longer than a few seconds to answer,
+          // especially when their edge CDN changes. Avoid marking them offline
+          // before the browser has had a reasonable chance to connect.
+          manifestLoadingTimeOut: 15000,
+          manifestLoadingMaxRetry: 2,
+          manifestLoadingRetryDelay: 1000,
           fragLoadingTimeOut: 15000,
-          manifestLoadingTimeOut: 15000
+          fragLoadingMaxRetry: 3,
+          fragLoadingRetryDelay: 1000,
+          levelLoadingTimeOut: 15000,
+          levelLoadingMaxRetry: 2,
+          levelLoadingRetryDelay: 1000
         });
         hlsRef.current = hls;
         hls.loadSource(streamSourceUrl);
@@ -456,6 +480,10 @@ export default function VideoPlayer({
           });
         });
 
+        hls.on(Hls.Events.FRAG_BUFFERED, () => {
+          setIsLoading(false);
+        });
+
         hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_, data) => {
           if (data.audioTracks && data.audioTracks.length > 0) {
             setAudioTracks([...data.audioTracks]);
@@ -469,9 +497,11 @@ export default function VideoPlayer({
 
         hls.on(Hls.Events.ERROR, (_, data) => {
           if (data.fatal) {
+            const isForbiddenOrNotFound = data.response?.code === 403 || data.response?.code === 404;
+
             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
               networkRetriesRef.current += 1;
-              if (networkRetriesRef.current <= 1) {
+              if (networkRetriesRef.current <= 1 && !isForbiddenOrNotFound) {
                 setErrorMsg('Connecting to stream, retrying...');
                 recordStreamHealth('checking');
                 hls.startLoad();
@@ -479,8 +509,9 @@ export default function VideoPlayer({
                 // Try next alternate URL if available
                 activeStreamIndex += 1;
                 currentTargetUrl = alternateUrls[activeStreamIndex];
+                networkRetriesRef.current = 0;
                 setErrorMsg('Connecting to alternate broadcast source...');
-                hls.loadSource(currentTargetUrl);
+                hls.loadSource(getFormattedUrl(currentTargetUrl, false));
                 hls.startLoad();
               } else if (!triedProxyRef.current && !corsProxy) {
                 // Try CORS Proxy fallback
@@ -536,6 +567,18 @@ export default function VideoPlayer({
 
     initHls(getFormattedUrl(currentTargetUrl, false));
   }, [channel, corsProxy]);
+
+  useEffect(() => {
+    if (!channel?.requiresSubscription) return;
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+    setIsLoading(false);
+    setHasError(true);
+    setStreamHealth('offline');
+    setErrorMsg(`${channel.name} requires an active ${channel.providerName || 'provider'} subscription. Use the official provider or load an authorised playlist from your TV operator.`);
+  }, [channel]);
 
   useEffect(() => {
     loadStream();
@@ -982,6 +1025,9 @@ export default function VideoPlayer({
             style={{ objectFit: aspectRatio, filter: `brightness(${brightness})` }}
             playsInline
             webkit-playsinline="true"
+            onPlaying={() => { setIsLoading(false); setIsPlaying(true); }}
+            onCanPlay={() => setIsLoading(false)}
+            onWaiting={() => setIsLoading(true)}
           />
 
           {/* Player Gesture HUD Toast (Volume, Brightness, Channel) */}
@@ -1190,10 +1236,23 @@ export default function VideoPlayer({
                 </p>
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-                <button onClick={handleManualRetry} className="btn-primary">
-                  <RotateCcw size={15} />
-                  <span>Retry Stream</span>
-                </button>
+                {channel.providerUrl ? (
+                  <a
+                    href={channel.providerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-primary"
+                    style={{ textDecoration: 'none' }}
+                  >
+                    <ExternalLink size={15} />
+                    <span>Open {channel.providerName || 'Provider'}</span>
+                  </a>
+                ) : (
+                  <button onClick={handleManualRetry} className="btn-primary">
+                    <RotateCcw size={15} />
+                    <span>Retry Stream</span>
+                  </button>
+                )}
                 <button onClick={handleNextChannel} className="btn-primary" style={{ background: 'var(--gradient-accent)' }}>
                   <Play size={15} fill="#fff" />
                   <span>Play Next Channel</span>

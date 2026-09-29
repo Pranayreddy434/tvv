@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Star, Tv, Play, Share2, Info, Check } from 'lucide-react';
 import { analytics } from '../services/analyticsService';
 
@@ -14,6 +14,45 @@ export default function ChannelCard({
 }) {
   const [imgError, setImgError] = useState(false);
   const [sharedToast, setSharedToast] = useState(false);
+
+  // Fast image timeout guard: if image hangs for > 2s, switch to fallback without freezing UI
+  useEffect(() => {
+    if (!channel?.logo) {
+      setImgError(true);
+      return;
+    }
+    setImgError(false);
+
+    let isCancelled = false;
+    const img = new Image();
+    img.referrerPolicy = 'no-referrer';
+    img.src = channel.logo;
+
+    if (img.complete && img.naturalWidth !== 0) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (!isCancelled && !img.complete) {
+        setImgError(true);
+      }
+    }, 2000);
+
+    img.onload = () => {
+      if (!isCancelled) clearTimeout(timer);
+    };
+    img.onerror = () => {
+      if (!isCancelled) {
+        clearTimeout(timer);
+        setImgError(true);
+      }
+    };
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [channel?.logo]);
 
   if (!channel) return null;
 
@@ -118,6 +157,7 @@ export default function ChannelCard({
               referrerPolicy="no-referrer"
               className="ch-list-logo"
               loading="lazy"
+              decoding="async"
               onError={() => setImgError(true)}
             />
           ) : (
@@ -241,6 +281,7 @@ export default function ChannelCard({
             referrerPolicy="no-referrer"
             className="ch-card-logo-img"
             loading="lazy"
+            decoding="async"
             onError={() => setImgError(true)}
           />
         ) : (

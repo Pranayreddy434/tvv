@@ -355,7 +355,19 @@ export default function App() {
     return allChannels.filter(c => {
       const g = (c.group || '').toLowerCase();
       const n = (c.name || '').toLowerCase();
-      return g.includes('kid') || g.includes('animat') || n.includes('kid') || n.includes('yay') || (c.categories && c.categories.includes('Kids'));
+      const cats = (c.categories || []).map(x => (x || '').toLowerCase());
+      return (
+        g.includes('kid') ||
+        g.includes('animat') ||
+        g.includes('cartoon') ||
+        n.includes('kid') ||
+        n.includes('yay') ||
+        n.includes('hungama') ||
+        n.includes('shark') ||
+        n.includes('cocomelon') ||
+        cats.includes('kids') ||
+        cats.includes('animation')
+      );
     });
   }, [allChannels]);
 
