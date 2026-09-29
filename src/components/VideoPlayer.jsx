@@ -131,10 +131,27 @@ export default function VideoPlayer({
 
   const isPipSupported = typeof document !== 'undefined' && 'pictureInPictureEnabled' in document;
 
-  const showControls = () => {
+  const CONTROLS_TIMEOUT_MS = 7500; // Increased to 7.5s timeout for comfortable mobile/desktop control access
+
+  const showControls = (customTimeout = CONTROLS_TIMEOUT_MS) => {
     setControlsVisible(true);
     clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = setTimeout(() => setControlsVisible(false), 3800);
+    if (isPlaying) {
+      hideTimerRef.current = setTimeout(() => {
+        setControlsVisible(false);
+      }, customTimeout);
+    }
+  };
+
+  const handleMouseLeave = () => {
+    // If device was touched recently or on mobile, do not hide controls immediately
+    if (Date.now() - touchStartRef.current.time < 3000) return;
+    if (isPlaying) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = setTimeout(() => {
+        if (isPlaying) setControlsVisible(false);
+      }, 3000);
+    }
   };
 
   const triggerOSD = () => {
@@ -470,6 +487,8 @@ export default function VideoPlayer({
       y: touch.clientY,
       time: Date.now()
     };
+    // Touching the screen immediately ensures controls show and stay visible for 7.5s
+    showControls(7500);
   };
 
   const handleTouchEnd = (e) => {
@@ -479,16 +498,17 @@ export default function VideoPlayer({
 
   // Screen Tap / Click Handler - toggles controls or fullscreen, NEVER switches channels
   const handlePlayerTap = (e) => {
-    // If interacting with interactive controls or overlay buttons, ignore
+    // If interacting with interactive controls or overlay buttons, keep them open & refresh 7.5s timer!
     if (
       e.target.closest('button') ||
       e.target.closest('select') ||
       e.target.closest('input') ||
       e.target.closest('.audio-track-popover') ||
       e.target.closest('.player-top-bar') ||
-      e.target.closest('.player-bottom-controls') ||
+      e.target.closest('.player-controls') ||
       e.target.closest('.player-center-play-btn')
     ) {
+      showControls(7500);
       return;
     }
 
@@ -507,17 +527,21 @@ export default function VideoPlayer({
     }
 
     const touch = e.changedTouches ? e.changedTouches[0] : e;
-    lastTapRef.current = { time: now, x: touch.clientX, y: touch.clientY };
+    lastTapRef.current = { time: now, x: touch ? touch.clientX : 0, y: touch ? touch.clientY : 0 };
 
-    // Single tap: toggle controls overlay
+    // Single tap on empty video: if controls hidden, show them for 7.5s; if already open, tap can close
     clearTimeout(singleTapTimerRef.current);
     singleTapTimerRef.current = setTimeout(() => {
       setControlsVisible(prev => {
-        const next = !prev;
-        if (next) showControls();
-        return next;
+        if (!prev) {
+          showControls(7500);
+          return true;
+        } else {
+          clearTimeout(hideTimerRef.current);
+          return false;
+        }
       });
-    }, 280);
+    }, 240);
   };
 
   // Keyboard navigation & Escape key handling
@@ -778,8 +802,8 @@ export default function VideoPlayer({
         <div
           ref={containerRef}
           className={`player-wrap ${isFullscreen ? 'is-fullscreen' : ''} ${isLandscapeMode ? 'is-rotated-landscape' : ''}`}
-          onMouseMove={showControls}
-          onMouseLeave={() => isPlaying && setControlsVisible(false)}
+          onMouseMove={() => showControls(7500)}
+          onMouseLeave={handleMouseLeave}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
           onClick={handlePlayerTap}
@@ -800,6 +824,7 @@ export default function VideoPlayer({
             onClick={(e) => {
               e.stopPropagation();
               togglePlay();
+              showControls(7500);
             }}
           >
             <button
@@ -808,6 +833,7 @@ export default function VideoPlayer({
               onClick={(e) => {
                 e.stopPropagation();
                 togglePlay();
+                showControls(7500);
               }}
             >
               {isPlaying ? <Pause size={30} fill="#fff" /> : <Play size={30} fill="#fff" style={{ marginLeft: 3 }} />}
@@ -836,7 +862,12 @@ export default function VideoPlayer({
           )}
 
           {/* Top Control Bar Overlay */}
-          <div className="player-top-bar" style={{ opacity: controlsVisible ? 1 : 0, pointerEvents: controlsVisible ? 'auto' : 'none' }}>
+          <div
+            className="player-top-bar"
+            onTouchStart={() => showControls(7500)}
+            onPointerDown={() => showControls(7500)}
+            style={{ opacity: controlsVisible ? 1 : 0, pointerEvents: controlsVisible ? 'auto' : 'none' }}
+          >
             <div className="player-channel-info">
               {channel.logo ? (
                 <div className="player-channel-logo">
@@ -976,7 +1007,12 @@ export default function VideoPlayer({
           )}
 
           {/* Bottom Player Controls Bar - Responsive Two-Tier Layout */}
-          <div className="player-controls" style={{ opacity: controlsVisible ? 1 : 0, pointerEvents: controlsVisible ? 'auto' : 'none' }}>
+          <div
+            className="player-controls"
+            onTouchStart={() => showControls(7500)}
+            onPointerDown={() => showControls(7500)}
+            style={{ opacity: controlsVisible ? 1 : 0, pointerEvents: controlsVisible ? 'auto' : 'none' }}
+          >
             {/* Primary Row: Playback Controls & Prominent Maximize Button */}
             <div className="controls-row controls-row-primary">
               {/* Play / Pause */}
