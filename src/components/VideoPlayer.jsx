@@ -3,13 +3,16 @@ import Hls from 'hls.js';
 import {
   Play, Pause, Volume2, VolumeX, Volume1, Maximize, PictureInPicture2,
   AlertTriangle, ExternalLink, Copy, Star, Tv, ShieldAlert, Monitor,
-  ChevronDown, Check, Languages, X, Menu, Zap, Radio
+  ChevronDown, Check, Languages, X, Menu, Zap, Radio, ChevronLeft, ChevronRight,
+  Share2, RotateCcw, Clock, Sparkles, Film
 } from 'lucide-react';
 import {
   AUDIO_LANGUAGES,
   matchesLanguage,
   ISO_LANG_MAP
 } from '../services/languageService';
+import { getCurrentAndNextProgram } from '../services/epgService';
+import { analytics } from '../services/analyticsService';
 
 const REGIONAL_NATIVE_NAMES = {
   Telugu: 'తెలుగు',
@@ -45,6 +48,8 @@ function getTrackLabel(track, index) {
   return track.lang ? track.lang.toUpperCase() : `Audio Track ${index + 1}`;
 }
 
+const CATEGORIES_TABS = ['All', 'Telugu', 'News', 'Movies', 'Sports', 'Entertainment', 'Music', 'Kids', 'Devotional'];
+
 export default function VideoPlayer({
   channel,
   allChannels = [],
@@ -54,6 +59,11 @@ export default function VideoPlayer({
   corsProxy,
   setCorsProxy,
   onOpenChannels,
+  onOpenSearch,
+  onOpenDetails,
+  onBrowseChannels,
+  selectedCategory = 'All',
+  onCategorySwitch
 }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
@@ -61,6 +71,33 @@ export default function VideoPlayer({
   const audioCtxRef = useRef(null);
   const gainNodeRef = useRef(null);
   const vocalFilterRef = useRef(null);
+  const networkRetriesRef = useRef(0);
+  const triedProxyRef = useRef(false);
+
+  const [activeCategory, setActiveCategory] = useState(() => {
+    return channel?.categories?.[0] || channel?.group || selectedCategory || 'All';
+  });
+
+  useEffect(() => {
+    if (channel?.categories?.[0]) {
+      setActiveCategory(channel.categories[0]);
+    } else if (channel?.group) {
+      setActiveCategory(channel.group);
+    }
+  }, [channel?.id, channel?.url]);
+
+  const categoryChannels = useMemo(() => {
+    if (!allChannels || allChannels.length === 0) return [];
+    if (activeCategory === 'All') return allChannels.slice(0, 36);
+    const catL = activeCategory.toLowerCase();
+    return allChannels.filter(c => {
+      if (activeCategory === 'Telugu') return matchesLanguage(c, 'Telugu') || (c.group && c.group.toLowerCase().includes('telugu'));
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      const cats = (c.categories || []).map(x => x.toLowerCase());
+      return g.includes(catL) || n.includes(catL) || cats.includes(catL);
+    }).slice(0, 36);
+  }, [allChannels, activeCategory]);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -68,6 +105,7 @@ export default function VideoPlayer({
   const [hasError, setHasError] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [streamHealth, setStreamHealth] = useState('online'); // 'online' | 'checking' | 'offline'
   const [hlsLevels, setHlsLevels] = useState([]);
   const [selectedLevel, setSelectedLevel] = useState(-1);
   const [audioTracks, setAudioTracks] = useState([]);
@@ -78,29 +116,53 @@ export default function VideoPlayer({
   const audioToastTimerRef = useRef(null);
   const [aspectRatio, setAspectRatio] = useState('contain');
   const [copiedLink, setCopiedLink] = useState(false);
+  const [sharedToast, setSharedToast] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimerRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showOSD, setShowOSD] = useState(false);
+  const osdTimerRef = useRef(null);
+
+  // Swipe gesture tracking
+  const touchStartRef = useRef({ x: 0, y: 0, time: 0 });
+
+  const isPipSupported = typeof document !== 'undefined' && 'pictureInPictureEnabled' in document;
 
   const showControls = () => {
     setControlsVisible(true);
     clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = setTimeout(() => setControlsVisible(false), 3500);
+    hideTimerRef.current = setTimeout(() => setControlsVisible(false), 3800);
+  };
+
+  const triggerOSD = () => {
+    setShowOSD(true);
+    clearTimeout(osdTimerRef.current);
+    osdTimerRef.current = setTimeout(() => setShowOSD(false), 3200);
   };
 
   useEffect(() => {
+    const handleFsChange = () => {
+      const fs = Boolean(document.fullscreenElement);
+      setIsFullscreen(fs);
+      analytics.fullscreenToggled(fs);
+      if (fs) triggerOSD();
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
     return () => {
+      document.removeEventListener('fullscreenchange', handleFsChange);
       clearTimeout(hideTimerRef.current);
       clearTimeout(audioToastTimerRef.current);
+      clearTimeout(osdTimerRef.current);
     };
   }, []);
 
-  const showAudioNotification = (label) => {
+  const showAudioNotification = (label, duration = 2500) => {
     setAudioToast(label);
     clearTimeout(audioToastTimerRef.current);
-    audioToastTimerRef.current = setTimeout(() => setAudioToast(null), 2200);
+    audioToastTimerRef.current = setTimeout(() => setAudioToast(null), duration);
   };
 
-  // Ensure Web Audio API boost context & dialogue clarity filter
+  // Web Audio Context setup for volume boost and dialogue clarity
   const ensureAudioCtx = () => {
     if (!videoRef.current) return;
     if (audioCtxRef.current) {
@@ -127,7 +189,7 @@ export default function VideoPlayer({
       vocalFilterRef.current = filter;
       gain.gain.value = volume;
     } catch (e) {
-      console.warn('AudioContext error:', e);
+      // AudioContext could be blocked by browser policy until gesture
     }
   };
 
@@ -141,7 +203,7 @@ export default function VideoPlayer({
     showAudioNotification(next ? '🎙️ Dialogue Clarity: ON' : '🎙️ Dialogue Clarity: OFF');
   };
 
-  // Switch Audio Track
+  // Audio track handler
   const handleAudioTrackChange = useCallback((trackId) => {
     if (trackId < 0) return;
     setSelectedAudioTrack(trackId);
@@ -158,18 +220,23 @@ export default function VideoPlayer({
     }
   }, [audioTracks]);
 
-  // Load HLS stream
-  useEffect(() => {
+  // Load HLS Stream
+  const loadStream = useCallback(() => {
     if (!channel?.url) return;
     setIsLoading(true);
     setHasError(false);
     setErrorMsg('');
+    setStreamHealth('checking');
     setHlsLevels([]);
     setSelectedLevel(-1);
     setAudioTracks([]);
     setSelectedAudioTrack(-1);
     setShowAudioModal(false);
     setAudioToast(null);
+    triggerOSD();
+
+    networkRetriesRef.current = 0;
+    triedProxyRef.current = false;
 
     const video = videoRef.current;
     if (!video) return;
@@ -178,7 +245,10 @@ export default function VideoPlayer({
       ? `https://api.allorigins.win/raw?url=${encodeURIComponent(channel.url)}`
       : channel.url;
 
-    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
 
     const updateAudioTracksFromHls = (hlsInstance) => {
       if (!hlsInstance) return;
@@ -190,37 +260,35 @@ export default function VideoPlayer({
     };
 
     if (Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true, lowLatencyMode: true, backBufferLength: 90 });
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        backBufferLength: 90,
+        fragLoadingTimeOut: 15000,
+        manifestLoadingTimeOut: 15000
+      });
       hlsRef.current = hls;
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
 
-      hls.on(Hls.Events.MANIFEST_LOADED, () => {
-        updateAudioTracksFromHls(hls);
-      });
-
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
         setIsLoading(false);
+        setStreamHealth('online');
         setHlsLevels(data.levels || []);
         updateAudioTracksFromHls(hls);
-        video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+        video.play().then(() => {
+          setIsPlaying(true);
+          analytics.channelPlay(channel);
+        }).catch(() => {
+          setIsPlaying(false);
+        });
       });
 
       hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_, data) => {
         if (data.audioTracks && data.audioTracks.length > 0) {
           setAudioTracks([...data.audioTracks]);
           setSelectedAudioTrack(hls.audioTrack >= 0 ? hls.audioTrack : 0);
-        } else {
-          updateAudioTracksFromHls(hls);
         }
-      });
-
-      hls.on(Hls.Events.LEVEL_LOADED, () => {
-        updateAudioTracksFromHls(hls);
-      });
-
-      hls.on(Hls.Events.AUDIO_TRACK_LOADED, () => {
-        updateAudioTracksFromHls(hls);
       });
 
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_, data) => {
@@ -230,69 +298,162 @@ export default function VideoPlayer({
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal) {
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            setErrorMsg('Network error — stream may be geo-blocked or offline.');
-            hls.startLoad();
+            networkRetriesRef.current += 1;
+            if (networkRetriesRef.current <= 1) {
+              setErrorMsg('Connection buffering, retrying...');
+              hls.startLoad();
+            } else if (!triedProxyRef.current && !corsProxy) {
+              triedProxyRef.current = true;
+              setErrorMsg('Direct stream restricted, trying CORS proxy fallback...');
+              const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(channel.url)}`;
+              hls.loadSource(proxyUrl);
+              hls.startLoad();
+            } else {
+              setHasError(true);
+              setStreamHealth('offline');
+              setErrorMsg('Stream unreachable or restricted. Please select another channel or browse categories.');
+              setIsLoading(false);
+              hls.destroy();
+            }
           } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             hls.recoverMediaError();
           } else {
             setHasError(true);
-            setErrorMsg('Stream could not be loaded. Try enabling CORS Proxy or open externally.');
+            setStreamHealth('offline');
+            setErrorMsg('Unable to play this channel format.');
+            analytics.channelError(channel, data.details || 'HLS Fatal Error');
+            setIsLoading(false);
             hls.destroy();
           }
-          setIsLoading(false);
         }
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = streamUrl;
       video.addEventListener('loadedmetadata', () => {
         setIsLoading(false);
-        if (video.audioTracks && video.audioTracks.length > 0) {
-          const list = Array.from(video.audioTracks).map((t, idx) => ({
-            id: idx,
-            name: t.label || t.language || `Track ${idx + 1}`,
-            lang: t.language,
-            enabled: t.enabled
-          }));
-          setAudioTracks(list);
-          const active = list.findIndex(t => t.enabled);
-          setSelectedAudioTrack(active >= 0 ? active : 0);
-        }
-        video.play().then(() => setIsPlaying(true)).catch(() => {});
+        setStreamHealth('online');
+        video.play().then(() => {
+          setIsPlaying(true);
+          analytics.channelPlay(channel);
+        }).catch(() => {});
       });
       video.addEventListener('error', () => {
         setHasError(true);
+        setStreamHealth('offline');
         setErrorMsg('Stream format not supported in this browser.');
         setIsLoading(false);
+        analytics.channelError(channel, 'HTML5 Video Error');
       });
     } else {
       setHasError(true);
-      setErrorMsg('HLS not supported in this browser.');
+      setStreamHealth('offline');
+      setErrorMsg('HLS playback is not supported in this browser.');
       setIsLoading(false);
     }
+  }, [channel, corsProxy]);
 
-    const handlePlaying = () => {
-      if (hlsRef.current) updateAudioTracksFromHls(hlsRef.current);
-    };
-    video.addEventListener('playing', handlePlaying);
-
+  useEffect(() => {
+    loadStream();
     return () => {
-      video.removeEventListener('playing', handlePlaying);
       if (hlsRef.current) hlsRef.current.destroy();
     };
-  }, [channel, corsProxy]);
+  }, [loadStream]);
+
+  // Channel switching (Prev / Next)
+  const currentIndex = allChannels.findIndex(
+    c => c.id === channel?.id || c.url === channel?.url
+  );
+
+  const handlePrevChannel = useCallback(() => {
+    if (allChannels.length === 0) return;
+    const prevIdx = (currentIndex - 1 + allChannels.length) % allChannels.length;
+    onSelectChannel(allChannels[prevIdx]);
+  }, [allChannels, currentIndex, onSelectChannel]);
+
+  const handleNextChannel = useCallback(() => {
+    if (allChannels.length === 0) return;
+    const nextIdx = (currentIndex + 1) % allChannels.length;
+    onSelectChannel(allChannels[nextIdx]);
+  }, [allChannels, currentIndex, onSelectChannel]);
+
+  // Touch Swipe navigation for mobile
+  const handleTouchStart = (e) => {
+    const touch = e.touches[0];
+    touchStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      time: Date.now()
+    };
+  };
+
+  const handleTouchEnd = (e) => {
+    const touch = e.changedTouches[0];
+    const diffX = touch.clientX - touchStartRef.current.x;
+    const diffY = touch.clientY - touchStartRef.current.y;
+    const elapsed = Date.now() - touchStartRef.current.time;
+
+    // Fast horizontal swipe (<400ms, >50px)
+    if (elapsed < 400 && Math.abs(diffX) > 50 && Math.abs(diffX) > Math.abs(diffY)) {
+      if (diffX > 0) {
+        handlePrevChannel(); // Swiped right -> Previous channel
+      } else {
+        handleNextChannel(); // Swiped left -> Next channel
+      }
+    }
+  };
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const tag = e.target.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        toggleMute();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        handlePrevChannel();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        handleNextChannel();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (!isPlaying) togglePlay();
+      } else if (e.key === '/' && onOpenSearch) {
+        e.preventDefault();
+        onOpenSearch();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPlaying, handlePrevChannel, handleNextChannel, onOpenSearch]);
 
   const togglePlay = () => {
     if (!videoRef.current) return;
     ensureAudioCtx();
-    if (isPlaying) { videoRef.current.pause(); setIsPlaying(false); }
-    else { videoRef.current.play().then(() => setIsPlaying(true)).catch(console.error); }
+    if (isPlaying) {
+      videoRef.current.pause();
+      setIsPlaying(false);
+    } else {
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(console.error);
+    }
   };
 
   const handleVolumeChange = (val) => {
     const v = typeof val === 'number' ? val : parseFloat(val.target.value);
     setVolume(v);
     ensureAudioCtx();
-    if (videoRef.current) { videoRef.current.volume = Math.min(v, 1); setIsMuted(v === 0); }
+    if (videoRef.current) {
+      videoRef.current.volume = Math.min(v, 1);
+      setIsMuted(v === 0);
+    }
     if (gainNodeRef.current) gainNodeRef.current.gain.value = v;
   };
 
@@ -306,15 +467,25 @@ export default function VideoPlayer({
   };
 
   const toggleFullscreen = () => {
-    if (!document.fullscreenElement) containerRef.current?.requestFullscreen();
-    else document.exitFullscreen();
+    if (!document.fullscreenElement) {
+      containerRef.current?.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
   };
 
   const togglePiP = async () => {
     try {
-      if (document.pictureInPictureElement) await document.exitPictureInPicture();
-      else await videoRef.current?.requestPictureInPicture();
-    } catch (e) { console.error(e); }
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+        analytics.pipToggled(false);
+      } else {
+        await videoRef.current?.requestPictureInPicture();
+        analytics.pipToggled(true);
+      }
+    } catch (e) {
+      console.error('PiP error:', e);
+    }
   };
 
   const copyUrl = () => {
@@ -324,210 +495,42 @@ export default function VideoPlayer({
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
+  const handleShare = () => {
+    if (!channel) return;
+    const shareUrl = window.location.href;
+    if (navigator.share) {
+      navigator.share({
+        title: `${channel.name} - StreamHub IPTV`,
+        text: `Watch ${channel.name} live on StreamHub IPTV!`,
+        url: shareUrl
+      }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(shareUrl);
+      setSharedToast(true);
+      setTimeout(() => setSharedToast(false), 2000);
+    }
+  };
+
   const cycleAspect = () => {
     const modes = ['contain', 'cover', 'fill'];
     setAspectRatio(modes[(modes.indexOf(aspectRatio) + 1) % modes.length]);
   };
 
-  // Keyboard shortcut listener for VideoPlayer actions
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      const tag = e.target.tagName.toLowerCase();
-      if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
-      if (e.key === ' ' || e.code === 'Space') {
-        e.preventDefault();
-        togglePlay();
-      } else if (e.key === 'f' || e.key === 'F') {
-        e.preventDefault();
-        toggleFullscreen();
-      } else if (e.key === 'm' || e.key === 'M') {
-        e.preventDefault();
-        toggleMute();
-      } else if (e.key === 'a' || e.key === 'A') {
-        if (audioTracks.length > 1) {
-          e.preventDefault();
-          const curIdx = selectedAudioTrack >= 0 ? selectedAudioTrack : 0;
-          const nextIdx = (curIdx + 1) % audioTracks.length;
-          handleAudioTrackChange(nextIdx);
-        } else {
-          setShowAudioModal(prev => !prev);
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [audioTracks, selectedAudioTrack, isPlaying, isMuted, volume, handleAudioTrackChange]);
+  // Recommended Channels: Same language or category, excluding current
+  const recommendedChannels = useMemo(() => {
+    if (!channel || allChannels.length === 0) return [];
+    return allChannels
+      .filter(c => c.id !== channel.id && c.url !== channel.url)
+      .filter(c => (c.language === channel.language || c.group === channel.group))
+      .slice(0, 6);
+  }, [channel, allChannels]);
+
+  // EPG details for current channel
+  const { current: currentProg, next: nextProg } = getCurrentAndNextProgram(channel);
+  const channelNum = channel?.channelNumber ? String(channel.channelNumber).padStart(3, '0') : null;
 
   const volPct = Math.round((isMuted ? 0 : volume) * 100);
   const volSliderStyle = { '--val': `${Math.min(volPct, 100)}%` };
-
-  // Available audio languages for this channel (from HLS tracks and channel metadata)
-  const channelAvailableLanguages = useMemo(() => {
-    const set = new Set();
-    if (channel?.languages) {
-      channel.languages.forEach(l => set.add(l.toLowerCase()));
-    }
-    if (channel?.language) {
-      set.add(channel.language.toLowerCase());
-    }
-    if (audioTracks && audioTracks.length > 0) {
-      audioTracks.forEach((t, idx) => {
-        const lbl = getTrackLabel(t, idx).toLowerCase();
-        set.add(lbl);
-        if (t.lang) {
-          const mapped = ISO_LANG_MAP[t.lang.toLowerCase()];
-          if (mapped) set.add(mapped.toLowerCase());
-          set.add(t.lang.toLowerCase());
-        }
-        if (t.name) {
-          for (const [, val] of Object.entries(ISO_LANG_MAP)) {
-            if (t.name.toLowerCase().includes(val.toLowerCase())) {
-              set.add(val.toLowerCase());
-            }
-          }
-        }
-      });
-    }
-    return set;
-  }, [channel, audioTracks]);
-
-  // Calculate active audio labels and multi-audio state
-  const activeAudioTrack = audioTracks.find(t => (t.id ?? -1) === selectedAudioTrack) || audioTracks[selectedAudioTrack];
-  const activeAudioFullName = activeAudioTrack
-    ? getTrackLabel(activeAudioTrack, selectedAudioTrack)
-    : (channel?.languages && channel.languages.length > 0 ? channel.languages[0] : (channel?.language || 'Default Audio'));
-  
-  // Clean, short label for player button (e.g. "Telugu", "Hindi", "English")
-  const activeAudioShort = useMemo(() => {
-    let s = activeAudioFullName;
-    if (s.includes('(')) s = s.split('(')[0].trim();
-    if (s.length > 9) s = s.slice(0, 8) + '…';
-    return s || 'Audio';
-  }, [activeAudioFullName]);
-
-  const hasMultipleAudios = audioTracks.length > 1 || (channel?.languages && channel.languages.length > 1) || channel?.isMultiAudio;
-
-  // Build audio options list strictly focused on Audio Tracks & Languages (JioTV / D2H Style)
-  const audioOptions = useMemo(() => {
-    const list = [];
-    if (audioTracks.length > 0) {
-      audioTracks.forEach((track, idx) => {
-        const trackId = track.id ?? idx;
-        const isCurrent = (selectedAudioTrack === trackId) || (selectedAudioTrack < 0 && idx === 0);
-        const rawLabel = getTrackLabel(track, idx);
-        const nativeScript = REGIONAL_NATIVE_NAMES[rawLabel] || '';
-        list.push({
-          id: trackId,
-          type: 'hls_track',
-          label: nativeScript ? `${rawLabel} (${nativeScript})` : rawLabel,
-          desc: track.lang ? `Live Stream Audio: ${track.lang.toUpperCase()}` : 'Live embedded multi-audio track',
-          badge: track.default ? 'Default' : undefined,
-          selected: isCurrent,
-        });
-      });
-    } else if (channel?.languages && channel.languages.length > 1) {
-      channel.languages.forEach((lang, idx) => {
-        const isCurrent = selectedAudioTrack === idx || (selectedAudioTrack < 0 && idx === 0);
-        const nativeScript = REGIONAL_NATIVE_NAMES[lang] || '';
-        list.push({
-          id: idx,
-          type: 'lang_meta',
-          label: nativeScript ? `${lang} (${nativeScript})` : `${lang} Audio`,
-          desc: `Broadcast station audio: ${lang}`,
-          badge: idx === 0 ? 'Primary' : undefined,
-          selected: isCurrent,
-        });
-      });
-    } else {
-      const nativeScript = REGIONAL_NATIVE_NAMES[activeAudioFullName] || '';
-      list.push({
-        id: 0,
-        type: 'default',
-        label: nativeScript ? `${activeAudioFullName} (${nativeScript})` : activeAudioFullName,
-        desc: 'Direct live station audio stream',
-        badge: 'Stereo',
-        selected: true,
-      });
-    }
-    return list;
-  }, [audioTracks, selectedAudioTrack, channel, activeAudioFullName]);
-
-  const [activeLanguageCode, setActiveLanguageCode] = useState(() => {
-    return channel?.language || 'English';
-  });
-
-  useEffect(() => {
-    if (channel?.language) {
-      setActiveLanguageCode(channel.language);
-    }
-  }, [channel?.id, channel?.url, channel?.language]);
-
-  const handleSelectAudioLanguage = useCallback((targetLang) => {
-    // 1. Look for embedded HLS track matching targetLang
-    if (audioTracks && audioTracks.length > 0) {
-      const langObj = AUDIO_LANGUAGES.find(l => l.code.toLowerCase() === targetLang.toLowerCase());
-      const isoCodes = langObj ? langObj.iso : [targetLang.toLowerCase().slice(0, 3)];
-
-      const trackIdx = audioTracks.findIndex(t => {
-        const tLang = (t.lang || '').toLowerCase();
-        const tName = (t.name || '').toLowerCase();
-        return (
-          isoCodes.some(code => tLang === code || tLang.startsWith(code) || tName.includes(code)) ||
-          tName.includes(targetLang.toLowerCase()) ||
-          (ISO_LANG_MAP[tLang] && ISO_LANG_MAP[tLang].toLowerCase() === targetLang.toLowerCase())
-        );
-      });
-
-      if (trackIdx !== -1) {
-        const chosenTrack = audioTracks[trackIdx];
-        const trackId = chosenTrack.id ?? trackIdx;
-        handleAudioTrackChange(trackId);
-        setActiveLanguageCode(targetLang);
-        showAudioNotification(`🔊 Audio: ${targetLang} (${getTrackLabel(chosenTrack, trackIdx)})`, 3000);
-        setShowAudioModal(false);
-        return;
-      }
-    }
-
-    // 2. If already playing in that language
-    if (matchesLanguage(channel, targetLang)) {
-      setActiveLanguageCode(targetLang);
-      showAudioNotification(`🔊 "${channel.name}" is already playing in ${targetLang}`, 2600);
-      setShowAudioModal(false);
-      return;
-    }
-
-    // 3. This channel broadcaster does not have this audio track
-    // CRITICAL: NEVER switch channel! Keep the current channel playing uninterrupted!
-    showAudioNotification(
-      `ℹ️ "${channel.name}" broadcasts only in ${channel.language || 'Original'}. No ${targetLang} audio track for this channel.`,
-      3500
-    );
-    setShowAudioModal(false);
-  }, [audioTracks, channel, handleAudioTrackChange]);
-
-  const handleAudioDropdownChange = (val) => {
-    if (val.startsWith('track_')) {
-      const trackId = parseInt(val.replace('track_', ''), 10);
-      handleAudioTrackChange(trackId);
-      const track = audioTracks.find(t => (t.id ?? -1) === trackId) || audioTracks[trackId];
-      if (track) {
-        showAudioNotification(`🔊 Audio track: ${getTrackLabel(track, trackId)}`, 3000);
-      }
-      return;
-    }
-    handleSelectAudioLanguage(val);
-  };
-
-  const handleSelectAudioOption = (opt) => {
-    if (opt.type === 'hls_track') {
-      handleAudioTrackChange(opt.id);
-    } else {
-      setSelectedAudioTrack(opt.id);
-      showAudioNotification(`Audio: ${opt.label}`);
-    }
-    setShowAudioModal(false);
-  };
 
   if (!channel) {
     return (
@@ -537,14 +540,16 @@ export default function VideoPlayer({
             <Tv size={36} color="var(--accent)" />
           </div>
           <div>
-            <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 8, color: 'var(--text-primary)' }}>Select a Channel</h2>
+            <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 8, color: 'var(--text-primary)' }}>
+              Select a Channel
+            </h2>
             <p style={{ color: 'var(--text-muted)', fontSize: 14, maxWidth: 380, margin: '0 auto 16px' }}>
               Pick any channel from the live directory to start ultra-fast streaming
             </p>
-            {onOpenChannels && (
-              <button onClick={onOpenChannels} className="btn-primary" style={{ margin: '0 auto' }}>
-                <Menu size={16} />
-                <span>Open Channels Directory</span>
+            {onBrowseChannels && (
+              <button onClick={onBrowseChannels} className="btn-primary" style={{ margin: '0 auto' }}>
+                <Film size={16} />
+                <span>Browse All Channels</span>
               </button>
             )}
           </div>
@@ -554,385 +559,509 @@ export default function VideoPlayer({
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="player-wrap"
-      onMouseMove={showControls}
-      onMouseLeave={() => isPlaying && setControlsVisible(false)}
-      style={{ cursor: controlsVisible ? 'default' : 'none' }}
-    >
-      {/* Video */}
-      <video
-        ref={videoRef}
-        className="player-video"
-        onClick={togglePlay}
-        style={{ objectFit: aspectRatio }}
-      />
+    <div className="player-page-layout">
+      {/* LEFT COLUMN: Main Video Player */}
+      <div className="player-main-column">
+        <div
+          ref={containerRef}
+          className={`player-wrap ${isFullscreen ? 'is-fullscreen' : ''}`}
+          onMouseMove={showControls}
+          onMouseLeave={() => isPlaying && setControlsVisible(false)}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+          style={{ cursor: controlsVisible ? 'default' : 'none' }}
+        >
+          {/* Native Video Element */}
+          <video
+            ref={videoRef}
+            className="player-video"
+            onClick={togglePlay}
+            style={{ objectFit: aspectRatio }}
+            playsInline
+          />
 
-      {/* Audio notification HUD */}
-      {audioToast && (
-        <div className="audio-toast">
-          <Languages size={15} color="var(--accent-light)" />
-          <span>{audioToast}</span>
-        </div>
-      )}
-
-      {/* JioTV / D2H Multi-Language Audio Selection Modal */}
-      {showAudioModal && (
-        <div className="audio-modal-popover" onClick={e => e.stopPropagation()}>
-          <div className="audio-modal-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-              <Languages size={16} color="var(--accent-light)" />
-              <div>
-                <div style={{ fontWeight: 800, fontSize: 13, color: '#fff', letterSpacing: '0.2px' }}>
-                  Select Audio Language
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                  JioTV & D2H Multi-Audio Feeds
-                </div>
-              </div>
+          {/* Fullscreen TV Mode Clean OSD Banner (Fades out automatically) */}
+          <div className={`player-osd-banner ${showOSD ? 'visible' : ''}`}>
+            <div className="osd-content">
+              {channelNum && <span className="ch-num-pill">CH {channelNum}</span>}
+              <span className="osd-channel-name">{channel.name}</span>
+              <span className="live-pill-inline">
+                <span className="live-dot" /> LIVE
+              </span>
+              <span className="badge badge-hd">{channel.quality || 'HD'}</span>
+              <span className="osd-program-title">{currentProg.title}</span>
             </div>
-            <button className="audio-modal-close" onClick={() => setShowAudioModal(false)} title="Close audio menu">
-              <X size={15} />
-            </button>
           </div>
 
-          <div className="audio-modal-body">
-            {/* Multiple Audio Language Dropdown (JioTV / D2H) */}
-            <div className="audio-modal-dropdown-block">
-              <div className="audio-section-label">Select Audio Language (JioTV / D2H):</div>
-              <div className="audio-select-dropdown-wrap">
-                <Languages size={15} color="var(--accent-light)" />
-                <select
-                  className="audio-modal-select-input"
-                  value={activeLanguageCode}
-                  onChange={e => handleAudioDropdownChange(e.target.value)}
+          {/* Audio Notification HUD Toast */}
+          {audioToast && (
+            <div className="audio-toast">
+              <Languages size={15} color="var(--accent-light)" />
+              <span>{audioToast}</span>
+            </div>
+          )}
+
+          {/* Top Control Bar Overlay */}
+          <div className="player-top-bar" style={{ opacity: controlsVisible ? 1 : 0 }}>
+            <div className="player-channel-info">
+              {channel.logo ? (
+                <div className="player-channel-logo">
+                  <img src={channel.logo} alt={channel.name} referrerPolicy="no-referrer" onError={(e) => { e.target.style.display = 'none'; }} />
+                </div>
+              ) : (
+                <div className="player-channel-logo">
+                  <Tv size={20} color="rgba(255,255,255,0.6)" />
+                </div>
+              )}
+              <div className="player-channel-text">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  {channelNum && <span className="ch-num-pill">CH {channelNum}</span>}
+                  <span className="player-channel-name">{channel.name}</span>
+                </div>
+                <div className="player-channel-group">
+                  <span>{channel.group || 'Live TV'}</span>
+                  {channel.language && <span> • {channel.language}</span>}
+                </div>
+              </div>
+
+              {/* Live Status indicator */}
+              <span className={`player-status-pill ${streamHealth}`}>
+                <span className="live-dot" />
+                <span>{streamHealth === 'online' ? 'LIVE' : streamHealth === 'checking' ? 'CHECKING' : 'OFFLINE'}</span>
+              </span>
+
+              <span className={`badge badge-${(channel.quality || 'sd').toLowerCase()} player-badge`}>
+                {channel.quality || 'HD'}
+              </span>
+            </div>
+
+            <div className="player-top-actions">
+              {onOpenChannels && (
+                <button onClick={onOpenChannels} className="ctrl-btn" title="Channels Drawer">
+                  <Menu size={15} />
+                </button>
+              )}
+              <button
+                onClick={() => onToggleFavorite(channel)}
+                className="ctrl-btn"
+                style={{
+                  borderColor: isFavorite ? 'rgba(245,158,11,0.5)' : undefined,
+                  background: isFavorite ? 'rgba(245,158,11,0.15)' : undefined
+                }}
+                title={isFavorite ? 'Remove Favorite' : 'Add to Favorites'}
+              >
+                <Star size={15} fill={isFavorite ? '#F59E0B' : 'none'} color={isFavorite ? '#F59E0B' : undefined} />
+              </button>
+              <button onClick={handleShare} className="ctrl-btn" title="Share Channel">
+                {sharedToast ? <Check size={15} color="var(--accent-light)" /> : <Share2 size={15} />}
+              </button>
+              <button onClick={copyUrl} className="ctrl-btn" title="Copy Stream URL">
+                {copiedLink ? <Check size={15} color="var(--accent-light)" /> : <Copy size={15} />}
+              </button>
+              <a href={channel.url} target="_blank" rel="noopener noreferrer" className="ctrl-btn" title="Open Stream Externally">
+                <ExternalLink size={15} />
+              </a>
+            </div>
+          </div>
+
+          {/* Loading Indicator */}
+          {isLoading && !hasError && (
+            <div className="player-loading">
+              <div className="spin" style={{
+                width: 46, height: 46,
+                border: '3px solid rgba(255,255,255,0.12)',
+                borderTopColor: 'var(--accent)',
+                borderRadius: '50%'
+              }} />
+              <span style={{ color: 'var(--text-secondary)', fontSize: 14, fontWeight: 500 }}>
+                Connecting to {channel.name}…
+              </span>
+            </div>
+          )}
+
+          {/* Automatic Stream Error Handling (Requirement 13) */}
+          {hasError && (
+            <div className="player-error">
+              <AlertTriangle size={46} color="#f43f5e" />
+              <div>
+                <h3 style={{ fontSize: 18, color: '#fff', marginBottom: 6 }}>Unable to play {channel.name}</h3>
+                <p style={{ color: 'var(--text-secondary)', fontSize: 13, maxWidth: 440, margin: '0 auto' }}>
+                  {errorMsg || 'The broadcast server is temporarily unreachable or geo-restricted.'}
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button onClick={loadStream} className="btn-primary">
+                  <RotateCcw size={15} />
+                  <span>Retry Stream</span>
+                </button>
+                <button onClick={handleNextChannel} className="btn-primary" style={{ background: 'var(--gradient-accent)' }}>
+                  <Play size={15} fill="#fff" />
+                  <span>Play Next Channel</span>
+                </button>
+                <button
+                  onClick={() => setCorsProxy(!corsProxy)}
+                  className="btn-secondary"
+                  title="Toggle CORS Proxy"
                 >
-                  {audioTracks.length > 1 && (
-                    <optgroup label="Live Stream Audio Tracks">
-                      {audioTracks.map((track, idx) => {
-                        const trackId = track.id ?? idx;
-                        const label = getTrackLabel(track, idx);
-                        return (
-                          <option key={`modal-track-${trackId}`} value={`track_${trackId}`}>
-                            🎧 {label} {track.default ? '(Default)' : ''}
-                          </option>
-                        );
-                      })}
-                    </optgroup>
-                  )}
-                  <optgroup label={audioTracks.length > 1 ? "Switch by Language" : "Audio Languages"}>
-                    {AUDIO_LANGUAGES.map(lang => {
-                      const isAvail = channelAvailableLanguages.has(lang.code.toLowerCase());
-                      return (
-                        <option key={lang.code} value={lang.code}>
-                          {lang.flag} {lang.label} {isAvail ? '✓ (Available)' : ''}
-                        </option>
-                      );
-                    })}
-                  </optgroup>
-                </select>
+                  <ShieldAlert size={15} />
+                  <span>{corsProxy ? 'Disable Proxy' : 'Enable CORS Proxy'}</span>
+                </button>
+                {onBrowseChannels && (
+                  <button onClick={() => onBrowseChannels(activeCategory)} className="btn-secondary">
+                    <Tv size={15} />
+                    <span>Browse {activeCategory !== 'All' ? activeCategory : ''} Channels</span>
+                  </button>
+                )}
               </div>
             </div>
+          )}
 
-            {/* Embedded HLS Audio Tracks */}
-            <div className="audio-section-label" style={{ marginTop: 12 }}>
-              {audioTracks.length > 1 ? `Detected Audio Tracks (${audioTracks.length}):` : 'Live Audio Stream:'}
-            </div>
-            <div className="audio-tracks-list">
-              {audioOptions.map((opt) => (
-                <button
-                  key={opt.id}
-                  className={`audio-track-item ${opt.selected ? 'active' : ''}`}
-                  onClick={() => handleSelectAudioOption(opt)}
-                >
-                  <div className="audio-track-radio">
-                    {opt.selected && <div className="audio-radio-inner" />}
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                    <span className="audio-track-name">{opt.label}</span>
-                    {opt.desc && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</span>}
-                  </div>
-                  {opt.badge && <span className="audio-default-tag">{opt.badge}</span>}
-                  {opt.selected && <Check size={14} color="var(--accent-light)" />}
+          {/* Bottom Player Controls Bar */}
+          <div className="player-controls" style={{ opacity: controlsVisible ? 1 : 0 }}>
+            <div className="controls-row">
+              {/* Play / Pause */}
+              <button className="play-btn" onClick={togglePlay} aria-label={isPlaying ? 'Pause' : 'Play'}>
+                {isPlaying
+                  ? <Pause size={18} fill="#111" color="#111" />
+                  : <Play size={18} fill="#111" color="#111" style={{ marginLeft: 2 }} />}
+              </button>
+
+              {/* Previous / Next Channel Buttons (Requirement 10) */}
+              <div className="ch-nav-buttons-group">
+                <button onClick={handlePrevChannel} className="ctrl-btn prev-ch-btn" title="Previous Channel (↑)">
+                  <ChevronLeft size={16} />
                 </button>
-              ))}
-            </div>
+                <button onClick={handleNextChannel} className="ctrl-btn next-ch-btn" title="Next Channel (↓)">
+                  <ChevronRight size={16} />
+                </button>
+              </div>
 
-            {/* Audio Sound Enhancements */}
-            <div style={{ marginTop: 14 }}>
-              <div className="audio-section-label">Audio Enhancement:</div>
-              <button
-                className={`audio-enhancement-btn ${speechClarity ? 'active' : ''}`}
-                onClick={toggleSpeechClarity}
-                title="Boost dialogue frequencies for clear speech"
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-                  <Volume2 size={16} color={speechClarity ? 'var(--accent-light)' : 'var(--text-muted)'} />
-                  <div>
-                    <div style={{ fontSize: 11.5, fontWeight: 600, color: '#fff' }}>Dialogue Clarity Boost</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Crisp dialogue enhancement (1kHz–4kHz)</div>
-                  </div>
+              {/* LIVE Badge */}
+              <div className="live-badge">
+                <span className="live-dot" />
+                <span className="live-label">LIVE</span>
+              </div>
+
+              {/* Volume & Boost */}
+              <div className="volume-group">
+                <button onClick={toggleMute} className="ctrl-btn" style={{ border: 'none', background: 'none', width: 28, height: 28 }} aria-label="Mute / Unmute">
+                  {isMuted || volume === 0
+                    ? <VolumeX size={16} color="rgba(255,255,255,0.7)" />
+                    : volume < 0.5
+                      ? <Volume1 size={16} color="rgba(255,255,255,0.7)" />
+                      : <Volume2 size={16} color={volume > 1 ? '#f43f5e' : 'rgba(255,255,255,0.7)'} />}
+                </button>
+
+                <input
+                  type="range"
+                  className="vol-slider"
+                  min="0" max="4" step="0.05"
+                  value={isMuted ? 0 : volume}
+                  onChange={handleVolumeChange}
+                  style={volSliderStyle}
+                  title="Volume (up to 400% boost)"
+                  aria-label="Volume Slider"
+                />
+
+                <span className="vol-pct">{volPct}%{volume > 1 ? ' 🔥' : ''}</span>
+
+                <div className="boost-pills">
+                  {[1, 2, 3, 4].map(b => (
+                    <button
+                      key={b}
+                      className={`boost-pill ${volume === b ? 'active' : ''}`}
+                      onClick={() => handleVolumeChange(b)}
+                      title={`${b * 100}% volume`}
+                    >
+                      {b * 100}%
+                    </button>
+                  ))}
                 </div>
-                <span className={`toggle-pill ${speechClarity ? 'on' : 'off'}`}>
-                  {speechClarity ? 'ON' : 'OFF'}
-                </span>
+              </div>
+
+              <div className="spacer" />
+
+              {/* Quality Picker */}
+              {hlsLevels.length > 0 && (
+                <select
+                  className="ctrl-select player-quality-select"
+                  value={selectedLevel}
+                  onChange={e => {
+                    const lv = parseInt(e.target.value);
+                    setSelectedLevel(lv);
+                    if (hlsRef.current) hlsRef.current.currentLevel = lv;
+                  }}
+                  title="Stream Resolution"
+                >
+                  <option value={-1}>Auto</option>
+                  {hlsLevels.map((lv, i) => (
+                    <option key={i} value={i}>{lv.height ? `${lv.height}p` : `Level ${i + 1}`}</option>
+                  ))}
+                </select>
+              )}
+
+              {/* Dialogue Clarity */}
+              <button
+                onClick={toggleSpeechClarity}
+                className={`ctrl-btn ${speechClarity ? 'active-gold' : ''}`}
+                title="Dialogue Clarity Boost"
+              >
+                <Zap size={15} />
+              </button>
+
+              {/* Aspect Ratio */}
+              <button onClick={cycleAspect} className="ctrl-btn aspect-btn" title={`Aspect Ratio: ${aspectRatio}`}>
+                <Monitor size={15} />
+              </button>
+
+              {/* PiP (Requirement 17) */}
+              {isPipSupported && (
+                <button onClick={togglePiP} className="ctrl-btn" title="Picture-in-Picture">
+                  <PictureInPicture2 size={15} />
+                </button>
+              )}
+
+              {/* Fullscreen (Requirement 9) */}
+              <button onClick={toggleFullscreen} className="ctrl-btn" title="Fullscreen (F)">
+                <Maximize size={15} />
               </button>
             </div>
-
-            {/* Volume Boost quick switch */}
-            <div style={{ marginTop: 12 }}>
-              <div className="audio-section-label">Volume Level:</div>
-              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                {[1, 2, 3, 4].map(b => (
-                  <button
-                    key={b}
-                    className={`boost-pill ${volume === b ? 'active' : ''}`}
-                    style={{ flex: 1, padding: '5px 0', fontSize: 11 }}
-                    onClick={() => handleVolumeChange(b)}
-                  >
-                    {b * 100}%
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
-
-          <div className="audio-modal-footer">
-            <span>Tip: Press <kbd className="shortcut-kbd">A</kbd> to cycle audio languages</span>
-          </div>
-        </div>
-      )}
-
-      {/* TOP BAR */}
-      <div className="player-top-bar" style={{ opacity: controlsVisible ? 1 : 0, transition: 'opacity 0.3s' }}>
-        <div className="player-channel-info">
-          {channel.logo ? (
-            <div className="player-channel-logo">
-              <img src={channel.logo} alt={channel.name} referrerPolicy="no-referrer" onError={e => e.target.style.display = 'none'} />
-            </div>
-          ) : (
-            <div className="player-channel-logo">
-              <Tv size={20} color="rgba(255,255,255,0.6)" />
-            </div>
-          )}
-          <div className="player-channel-text">
-            <div className="player-channel-name">{channel.name}</div>
-            <div className="player-channel-group">
-              <span>{channel.group}</span>
-              {channel.country !== 'Global' && <span className="meta-hide-mobile">{` · ${channel.country}`}</span>}
-              {channel.language && <span className="meta-hide-mobile">{` · ${channel.language}`}</span>}
-            </div>
-          </div>
-          <span className={`badge badge-${(channel.quality || 'sd').toLowerCase()} player-badge`}>
-            {channel.quality}
-          </span>
-          {/* Top Bar Audio Pill */}
-          <button
-            className={`player-audio-pill ${hasMultipleAudios ? 'multi' : ''}`}
-            onClick={() => setShowAudioModal(prev => !prev)}
-            title="Audio Languages (Press 'A' to switch)"
-          >
-            <Languages size={12} />
-            <span>Audio: {activeAudioShort}</span>
-            {hasMultipleAudios && <span className="audio-badge-dot" />}
-          </button>
-        </div>
-
-        <div className="player-top-actions">
-          {onOpenChannels && (
-            <button onClick={onOpenChannels} className="ctrl-btn" title="Open Channels Drawer">
-              <Menu size={15} />
-            </button>
-          )}
-          <button
-            onClick={() => onToggleFavorite(channel)}
-            className="ctrl-btn"
-            style={{ borderColor: isFavorite ? 'rgba(245,158,11,0.5)' : undefined, background: isFavorite ? 'rgba(245,158,11,0.15)' : undefined }}
-            title={isFavorite ? 'Remove favorite' : 'Add favorite'}
-          >
-            <Star size={15} fill={isFavorite ? '#F59E0B' : 'none'} color={isFavorite ? '#F59E0B' : undefined} />
-          </button>
-          <button onClick={copyUrl} className="ctrl-btn" title="Copy stream URL">
-            {copiedLink ? <Check size={15} color="var(--accent)" /> : <Copy size={15} />}
-          </button>
-          <a href={channel.url} target="_blank" rel="noopener noreferrer" className="ctrl-btn" title="Open externally">
-            <ExternalLink size={15} />
-          </a>
         </div>
       </div>
 
-      {/* LOADING */}
-      {isLoading && !hasError && (
-        <div className="player-loading">
-          <div className="spin" style={{
-            width: 44, height: 44,
-            border: '3px solid rgba(255,255,255,0.1)',
-            borderTopColor: 'var(--accent)',
-            borderRadius: '50%'
-          }} />
-          <span style={{ color: 'var(--text-secondary)', fontSize: 14, fontWeight: 500 }}>
-            Connecting to live stream…
-          </span>
-        </div>
-      )}
-
-      {/* ERROR */}
-      {hasError && (
-        <div className="player-error">
-          <AlertTriangle size={48} color="#f43f5e" />
-          <div>
-            <h3 style={{ fontSize: 18, color: '#fff', marginBottom: 8 }}>Playback Error</h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: 13, maxWidth: 420 }}>{errorMsg}</p>
-          </div>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button
-              onClick={() => setCorsProxy(!corsProxy)}
-              className="btn-primary"
-              style={{ background: corsProxy ? 'linear-gradient(135deg,#38bdf8,#0e7490)' : undefined }}
-            >
-              <ShieldAlert size={15} />
-              {corsProxy ? 'Disable CORS Proxy' : 'Enable CORS Proxy'}
-            </button>
-            <a href={channel.url} target="_blank" rel="noopener noreferrer"
-              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 14px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: 13, textDecoration: 'none' }}>
-              <ExternalLink size={15} /> Open Externally
-            </a>
-          </div>
-        </div>
-      )}
-
-      {/* CONTROLS BAR */}
-      <div className="player-controls" style={{ opacity: controlsVisible ? 1 : 0, transition: 'opacity 0.3s' }}>
-        <div className="controls-row">
-          {/* Play/Pause */}
-          <button className="play-btn" onClick={togglePlay}>
-            {isPlaying
-              ? <Pause size={18} fill="#111" color="#111" />
-              : <Play size={18} fill="#111" color="#111" style={{ marginLeft: 2 }} />}
-          </button>
-
-          {/* Live badge */}
-          <div className="live-badge">
-            <span className="live-dot" />
-            <span className="live-label">LIVE</span>
-          </div>
-
-          {/* Volume */}
-          <div className="volume-group">
-            <button onClick={toggleMute} className="ctrl-btn" style={{ border: 'none', background: 'none', width: 28, height: 28 }}>
-              {isMuted || volume === 0
-                ? <VolumeX size={16} color="rgba(255,255,255,0.7)" />
-                : volume < 0.5
-                  ? <Volume1 size={16} color="rgba(255,255,255,0.7)" />
-                  : <Volume2 size={16} color={volume > 1 ? '#f43f5e' : 'rgba(255,255,255,0.7)'} />}
-            </button>
-
-            <input
-              type="range"
-              className="vol-slider"
-              min="0" max="4" step="0.05"
-              value={isMuted ? 0 : volume}
-              onChange={handleVolumeChange}
-              style={volSliderStyle}
-              title="Volume (up to 400% boost)"
-            />
-
-            <span className="vol-pct">{volPct}%{volume > 1 ? ' 🔥' : ''}</span>
-
-            <div className="boost-pills">
-              {[1, 2, 3, 4].map(b => (
-                <button
-                  key={b}
-                  className={`boost-pill ${volume === b ? 'active' : ''}`}
-                  onClick={() => handleVolumeChange(b)}
-                  title={`${b * 100}% volume`}
-                >
-                  {b * 100}%
-                </button>
-              ))}
+      {/* RIGHT COLUMN: Channel Details Sidebar & "You May Also Like" */}
+      <div className="player-info-sidebar">
+        {/* Channel Header Banner */}
+        <div className="sidebar-section-box">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: 12 }}>
+            <div className="sidebar-channel-logo">
+              {channel.logo ? (
+                <img src={channel.logo} alt={channel.name} referrerPolicy="no-referrer" />
+              ) : (
+                <Tv size={28} color="var(--accent-light)" />
+              )}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                {channelNum && <span className="ch-num-pill">CH {channelNum}</span>}
+                <h3 className="sidebar-channel-name">{channel.name}</h3>
+              </div>
+              <div className="sidebar-channel-meta">
+                <span className="live-pill-inline">
+                  <span className="live-dot" /> LIVE
+                </span>
+                <span>• {channel.language}</span>
+                <span>• {channel.group || 'Live TV'}</span>
+              </div>
             </div>
           </div>
 
-          <div className="spacer" />
-
-          {/* Multiple Audio Dropdown (JioTV / D2H Multi-Language) */}
-          <div className="player-audio-control-group">
+          {/* Quick Action Buttons */}
+          <div className="sidebar-action-bar">
             <button
-              className={`ctrl-btn audio-toggle-btn ${showAudioModal ? 'active' : ''} ${hasMultipleAudios ? 'highlight' : ''}`}
-              onClick={() => setShowAudioModal(prev => !prev)}
-              title="Open Audio Options & Boost Dialog"
+              onClick={() => onToggleFavorite(channel)}
+              className={`sidebar-btn ${isFavorite ? 'active' : ''}`}
             >
-              <Languages size={15} />
+              <Star size={15} fill={isFavorite ? '#F59E0B' : 'none'} color={isFavorite ? '#F59E0B' : 'currentColor'} />
+              <span>{isFavorite ? 'Favorited' : 'Favorite'}</span>
             </button>
-            <div className="player-audio-dropdown-wrap">
-              <select
-                className="player-audio-dropdown"
-                value={activeLanguageCode}
-                onChange={e => handleAudioDropdownChange(e.target.value)}
-                title="Select Audio Language (JioTV / D2H)"
-              >
-                {audioTracks.length > 1 && (
-                  <optgroup label="Live Tracks">
-                    {audioTracks.map((track, idx) => {
-                      const trackId = track.id ?? idx;
-                      const label = getTrackLabel(track, idx);
-                      return (
-                        <option key={`ctrl-track-${trackId}`} value={`track_${trackId}`}>
-                          🎧 {label} {track.default ? '(Default)' : ''}
-                        </option>
-                      );
-                    })}
-                  </optgroup>
-                )}
-                <optgroup label={audioTracks.length > 1 ? "By Language" : "Audio Language"}>
-                  {AUDIO_LANGUAGES.map(lang => {
-                    const isAvail = channelAvailableLanguages.has(lang.code.toLowerCase());
-                    return (
-                      <option key={lang.code} value={lang.code}>
-                        {lang.flag} {lang.code} {isAvail ? '✓' : ''}
-                      </option>
-                    );
-                  })}
-                </optgroup>
-              </select>
+
+            <button onClick={handleShare} className="sidebar-btn">
+              <Share2 size={15} />
+              <span>Share</span>
+            </button>
+
+            {onOpenDetails && (
+              <button onClick={() => onOpenDetails(channel)} className="sidebar-btn">
+                <Clock size={15} />
+                <span>Details</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* EPG Now Playing Section (Requirement 14 & 15) */}
+        <div className="sidebar-section-box">
+          <div className="sidebar-box-title">
+            <Clock size={14} color="var(--accent-light)" />
+            <span>ELECTRONIC PROGRAM GUIDE</span>
+          </div>
+
+          <div className="sidebar-epg-current">
+            <div className="epg-badge-label">NOW BROADCASTING</div>
+            <div className="epg-show-title">{currentProg.title}</div>
+            <div className="epg-show-time">{currentProg.time}</div>
+            <div className="hero-progress-track" style={{ marginTop: 8 }}>
+              <div className="hero-progress-fill" style={{ width: `${currentProg.progress || 50}%` }} />
             </div>
           </div>
 
-          {/* Quality Picker (Hidden on mobile / small screens) */}
-          {hlsLevels.length > 0 && (
-            <select
-              className="ctrl-select player-quality-select"
-              value={selectedLevel}
-              onChange={e => {
-                const lv = parseInt(e.target.value);
-                setSelectedLevel(lv);
-                if (hlsRef.current) hlsRef.current.currentLevel = lv;
-              }}
-              title="Stream Quality"
-            >
-              <option value={-1}>Auto</option>
-              {hlsLevels.map((lv, i) => (
-                <option key={i} value={i}>{lv.height ? `${lv.height}p` : `Level ${i + 1}`}</option>
-              ))}
-            </select>
+          {nextProg && (
+            <div className="sidebar-epg-next" style={{ marginTop: 12 }}>
+              <div className="epg-badge-label">UP NEXT</div>
+              <div className="epg-show-title">{nextProg.title}</div>
+              <div className="epg-show-time">{nextProg.time}</div>
+            </div>
           )}
-
-          {/* Aspect ratio */}
-          <button onClick={cycleAspect} className="ctrl-btn aspect-btn" title={`Aspect Ratio: ${aspectRatio}`}>
-            <Monitor size={15} />
-          </button>
-
-          {/* PiP */}
-          <button onClick={togglePiP} className="ctrl-btn" title="Picture-in-Picture">
-            <PictureInPicture2 size={15} />
-          </button>
-
-          {/* Fullscreen */}
-          <button onClick={toggleFullscreen} className="ctrl-btn" title="Fullscreen">
-            <Maximize size={15} />
-          </button>
         </div>
+
+        {/* Quick Prev / Next Channel Buttons */}
+        <div className="sidebar-section-box">
+          <div className="sidebar-box-title">
+            <Tv size={14} color="var(--accent-light)" />
+            <span>CHANNEL SWITCHING</span>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button onClick={handlePrevChannel} className="btn-secondary" style={{ flex: 1, padding: '8px 12px', fontSize: 13 }}>
+              <ChevronLeft size={16} />
+              <span>Previous</span>
+            </button>
+            <button onClick={handleNextChannel} className="btn-secondary" style={{ flex: 1, padding: '8px 12px', fontSize: 13 }}>
+              <span>Next</span>
+              <ChevronRight size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Category Switcher & Channel Rail while playing */}
+        <div className="sidebar-section-box">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div className="sidebar-box-title" style={{ margin: 0 }}>
+              <Film size={14} color="var(--accent-light)" />
+              <span>EXPLORE CATEGORIES</span>
+            </div>
+            {onBrowseChannels && (
+              <button
+                onClick={() => onBrowseChannels(activeCategory)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--accent-light)',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 3
+                }}
+              >
+                Full Grid <ExternalLink size={11} />
+              </button>
+            )}
+          </div>
+
+          {/* Category Tabs */}
+          <div className="sidebar-cat-pills-scroll" style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 6, scrollbarWidth: 'none' }}>
+            {CATEGORIES_TABS.map(cat => (
+              <button
+                key={cat}
+                onClick={() => {
+                  setActiveCategory(cat);
+                  if (onCategorySwitch) onCategorySwitch(cat);
+                }}
+                className={`sidebar-cat-pill ${activeCategory === cat ? 'active' : ''}`}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: 16,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                  border: '1px solid',
+                  borderColor: activeCategory === cat ? 'var(--accent)' : 'rgba(255,255,255,0.1)',
+                  background: activeCategory === cat ? 'var(--accent)' : 'rgba(255,255,255,0.04)',
+                  color: activeCategory === cat ? '#000' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          {/* Filtered Channel Quick List */}
+          <div className="sidebar-channel-quick-list" style={{ maxHeight: '250px', overflowY: 'auto', marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {categoryChannels.map(ch => {
+              const isCurrent = channel?.id === ch.id || channel?.url === ch.url;
+              return (
+                <div
+                  key={ch.id || ch.url}
+                  onClick={() => onSelectChannel(ch)}
+                  className={`sidebar-rec-item ${isCurrent ? 'active-playing-item' : ''}`}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '6px 10px',
+                    borderRadius: 8,
+                    background: isCurrent ? 'rgba(255, 107, 0, 0.15)' : 'rgba(255,255,255,0.03)',
+                    border: `1px solid ${isCurrent ? 'var(--accent)' : 'transparent'}`,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <div className="rec-logo-wrap" style={{ width: 28, height: 28, borderRadius: 6, overflow: 'hidden', background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    {ch.logo ? (
+                      <img src={ch.logo} alt="" loading="lazy" referrerPolicy="no-referrer" style={{ width: '100%', height: '100%', objectFit: 'contain' }} onError={(e) => { e.target.style.display = 'none'; }} />
+                    ) : (
+                      <Tv size={14} color="var(--accent-light)" />
+                    )}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: isCurrent ? 'var(--accent-light)' : '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {ch.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      {ch.group || ch.language} • {ch.quality || 'HD'}
+                    </div>
+                  </div>
+                  {isCurrent ? (
+                    <span className="live-dot" style={{ width: 6, height: 6 }} />
+                  ) : (
+                    <Play size={12} color="var(--text-muted)" />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Recommended Channels: "You May Also Like" (Requirement 16) */}
+        {recommendedChannels.length > 0 && (
+          <div className="sidebar-section-box">
+            <div className="sidebar-box-title">
+              <Sparkles size={14} color="var(--accent-light)" />
+              <span>YOU MAY ALSO LIKE</span>
+            </div>
+
+            <div className="sidebar-recommended-list">
+              {recommendedChannels.map(rec => (
+                <div
+                  key={rec.id || rec.url}
+                  className="sidebar-rec-item"
+                  onClick={() => onSelectChannel(rec)}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <div className="rec-logo-wrap">
+                    {rec.logo ? (
+                      <img src={rec.logo} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                    ) : (
+                      <Tv size={16} color="var(--accent-light)" />
+                    )}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="rec-name">{rec.name}</div>
+                    <div className="rec-meta">{rec.language} • {rec.group}</div>
+                  </div>
+                  <Play size={13} fill="var(--accent-light)" color="var(--accent-light)" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

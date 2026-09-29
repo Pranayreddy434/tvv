@@ -92,51 +92,51 @@ export function isTeluguChannel(channel) {
   const isIndian = country === 'IN' || /\.in(@|$)/i.test(tvgId);
   if (!isIndian) return false;
 
-  const teluguBrandRegex = new RegExp(
-    '\\bstar\\s*maa\\b|\\bstarmaa\\b|\\bmaa\\s*(tv|movies|gold|music)\\b' +
-    '|\\bzee\\s*(telugu|cinemalu)\\b|\\bzeecinemalu\\b' +
-    '|\\betv\\s*(telugu|andhra|telangana|plus|cinema|life|abhiruchi|news|beats|comedy|josh|music)?\\b' +
-    '|\\betv(telugu|andhra|telangana|plus|cinema|life|abhiruchi|news|beats|comedy|josh|music)?\\.in' +
-    '|\\bgemini\\s*(tv|movies|music|comedy|life)\\b|\\bsungemini\\b' +
-    '|\\btv9\\s*telugu\\b|\\btv9telugu\\b|\\btv5\\s*news\\b|\\btv5news\\b|\\bv6\\s*news\\b|\\bv6news\\b' +
-    '|\\bntv\\s*telugu\\b|\\bntvtelugu\\b|\\bntv\\s*news\\b' +
-    '|\\bhmtv\\b|\\b10\\s*tv\\b|\\b10tv\\b|\\b99\\s*tv\\b|\\b99tv\\b' +
-    '|\\bprime\\s*9(\\s*news)?\\b|\\bprime9news\\b' +
-    '|\\bcvr\\s*(news|health|om|spiritual)\\b|\\bcvr(news|health|omspiritual)?\\.in' +
-    '|\\babn\\s*(andhra|jyoth?i)?\\b|\\babnandhra\\b|\\babn\\.in\\b' +
-    '|\\bsakshi\\s*(tv|news)?\\b|\\bsakshitv\\b' +
-    '|\\b(t[\\s-]news|tnews)\\b' +
-    '|\\bbig\\s*tv\\b|\\bbigtv\\.in\\b' +
-    '|\\bbrk\\s*news\\b|\\bbrknews\\.in\\b' +
-    '|\\bswatantra\\s*tv\\b|\\bswatantratv\\.in\\b' +
-    '|\\bdd\\s*(saptagiri|yadagiri)\\b|\\bdd(saptagiri|yadagiri)\\.in\\b' +
-    '|\\bvanitha\\s*tv\\b|\\bvanithatv\\b' +
-    '|\\bvissa\\s*tv\\b|\\bvissatv\\b' +
-    '|\\bsvbc\\b|\\bsvbc\\.in\\b' +
-    '|\\bbhakthi\\s*tv\\b|\\bbhakthitv\\b' +
-    '|\\b6\\s*tv\\s*telugu\\b|\\b6tvtelugu\\b' +
-    '|\\bmahaa\\s*(news|tv|max|bhakti)\\b|\\bmahaa(news|max|bhakti)?\\.in\\b' +
-    '|\\bmango\\s*(mobile\\s*tv|music|telugu)\\b|\\bmangomobiletv\\b' +
-    '|\\binews\\b|\\binews\\.in\\b' +
-    '|\\bmojo\\s*tv\\b|\\bmojotv\\.in\\b' +
-    '|\\bdivyavani\\s*tv\\b|\\bdivyavanitv\\b' +
-    '|\\bhindu\\s*dharmam\\b|\\bhindudharmam\\b' +
-    '|\\bnireekshana\\s*tv\\b|\\bnireekshanatv\\b' +
-    '|\\bsubhavaarth?a\\b|\\bsubhavaarthatv\\b' +
-    '|\\btolly\\s*tv\\b|\\btollywood\\b|\\btollytv\\b' +
-    '|\\braj\\s*(news|musix)\\s*telugu\\b|\\braj(news|musix)telugu\\b' +
-    '|\\bnews18\\s*(telugu|andhra|telangana)\\b' +
-    '|\\btelugu\\s*one\\b|\\bteluguone\\.in\\b' +
-    '|\\bap\\s*24x?7\\b' +
-    '|\\bpmc\\s*telugu\\b|\\bpmctelugu\\b' +
-    '|\\bwow\\s*kidz\\s*telugu\\b|wowkidz.*telugu' +
-    '|sony.*sport.*telugu|star.*sport.*telugu',
-    'i'
-  );
-
   const combined = `${name} ${tvgId} ${group}`;
-  return teluguBrandRegex.test(combined);
+  return TELUGU_BRAND_REGEX.test(combined);
 }
+
+const TELUGU_BRAND_REGEX = new RegExp(
+  '\\bstar\\s*maa\\b|\\bstarmaa\\b|\\bmaa\\s*(tv|movies|gold|music)\\b' +
+  '|\\bzee\\s*(telugu|cinemalu)\\b|\\bzeecinemalu\\b' +
+  '|\\betv\\s*(telugu|andhra|telangana|plus|cinema|life|abhiruchi|news|beats|comedy|josh|music)?\\b' +
+  '|\\betv(telugu|andhra|telangana|plus|cinema|life|abhiruchi|news|beats|comedy|josh|music)?\\.in' +
+  '|\\bgemini\\s*(tv|movies|music|comedy|life)\\b|\\bsungemini\\b' +
+  '|\\btv9\\s*telugu\\b|\\btv9telugu\\b|\\btv5\\s*news\\b|\\btv5news\\b|\\bv6\\s*news\\b|\\bv6news\\b' +
+  '|\\bntv\\s*telugu\\b|\\bntvtelugu\\b|\\bntv\\s*news\\b' +
+  '|\\bhmtv\\b|\\b10\\s*tv\\b|\\b10tv\\b|\\b99\\s*tv\\b|\\b99tv\\b' +
+  '|\\bprime\\s*9(\\s*news)?\\b|\\bprime9news\\b' +
+  '|\\bcvr\\s*(news|health|om|spiritual)\\b|\\bcvr(news|health|omspiritual)?\\.in' +
+  '|\\babn\\s*(andhra|jyoth?i)?\\b|\\babnandhra\\b|\\babn\\.in\\b' +
+  '|\\bsakshi\\s*(tv|news)?\\b|\\bsakshitv\\b' +
+  '|\\b(t[\\s-]news|tnews)\\b' +
+  '|\\bbig\\s*tv\\b|\\bbigtv\\.in\\b' +
+  '|\\bbrk\\s*news\\b|\\bbrknews\\.in\\b' +
+  '|\\bswatantra\\s*tv\\b|\\bswatantratv\\.in\\b' +
+  '|\\bdd\\s*(saptagiri|yadagiri)\\b|\\bdd(saptagiri|yadagiri)\\.in\\b' +
+  '|\\bvanitha\\s*tv\\b|\\bvanithatv\\b' +
+  '|\\bvissa\\s*tv\\b|\\bvissatv\\b' +
+  '|\\bsvbc\\b|\\bsvbc\\.in\\b' +
+  '|\\bbhakthi\\s*tv\\b|\\bbhakthitv\\b' +
+  '|\\b6\\s*tv\\s*telugu\\b|\\b6tvtelugu\\b' +
+  '|\\bmahaa\\s*(news|tv|max|bhakti)\\b|\\bmahaa(news|max|bhakti)?\\.in\\b' +
+  '|\\bmango\\s*(mobile\\s*tv|music|telugu)\\b|\\bmangomobiletv\\b' +
+  '|\\binews\\b|\\binews\\.in\\b' +
+  '|\\bmojo\\s*tv\\b|\\bmojotv\\.in\\b' +
+  '|\\bdivyavani\\s*tv\\b|\\bdivyavanitv\\b' +
+  '|\\bhindu\\s*dharmam\\b|\\bhindudharmam\\b' +
+  '|\\bnireekshana\\s*tv\\b|\\bnireekshanatv\\b' +
+  '|\\bsubhavaarth?a\\b|\\bsubhavaarthatv\\b' +
+  '|\\btolly\\s*tv\\b|\\btollywood\\b|\\btollytv\\b' +
+  '|\\braj\\s*(news|musix)\\s*telugu\\b|\\braj(news|musix)telugu\\b' +
+  '|\\bnews18\\s*(telugu|andhra|telangana)\\b' +
+  '|\\btelugu\\s*one\\b|\\bteluguone\\.in\\b' +
+  '|\\bap\\s*24x?7\\b' +
+  '|\\bpmc\\s*telugu\\b|\\bpmctelugu\\b' +
+  '|\\bwow\\s*kidz\\s*telugu\\b|wowkidz.*telugu' +
+  '|sony.*sport.*telugu|star.*sport.*telugu',
+  'i'
+);
 
 // Fallback keyword mapping for other languages
 export const LANG_KEYWORDS = {

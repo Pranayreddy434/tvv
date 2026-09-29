@@ -1,0 +1,19 @@
+{
+  "name": "StreamHub IPTV - Live Television & Movies",
+  "short_name": "StreamHub",
+  "description": "Premium IPTV and OTT Web Platform streaming thousands of live TV channels worldwide.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0B0C0E",
+  "theme_color": "#FF5722",
+  "orientation": "any",
+  "categories": ["entertainment", "video", "multimedia"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

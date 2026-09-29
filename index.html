@@ -2,17 +2,50 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%236366f1%22 stroke-width=%222%22><rect x=%222%22 y=%227%22 width=%2220%22 height=%2214%22 rx=%222%22 ry=%222%22/><path d=%22M17 2l-5 5-5-5%22/></svg>" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
     <meta name="referrer" content="no-referrer" />
-    <title>StreamHub IPTV - Play Live TV Channels WorldWide</title>
-    <meta name="description" content="Feature-rich modern IPTV Web Player supporting thousands of live television channels, HLS streaming, EPG details, custom playlists, and multi-view." />
+    
+    <!-- Title & SEO Tags -->
+    <title>StreamHub IPTV - Premium Live TV, Telugu Channels & Movies</title>
+    <meta name="description" content="Watch high-definition Live TV channels, Telugu entertainment, 24/7 breaking news, blockbuster movies, music, and sports with real-time EPG TV Guide." />
+    <meta name="keywords" content="IPTV, Live TV, Telugu TV, ETV Telugu, Gemini TV, Star Maa, Zee Telugu, TV9 Telugu, News, Movies, EPG, Web Player, HLS Streaming" />
+    <meta name="author" content="StreamHub IPTV" />
+
+    <!-- Open Graph & Social Sharing Metadata -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="StreamHub IPTV - Premium Live TV & OTT Platform" />
+    <meta property="og:description" content="Watch live television streams, Telugu entertainment, breaking news, sports, and movies with zero latency." />
+    <meta property="og:image" content="/icon.svg" />
+    <meta property="og:site_name" content="StreamHub IPTV" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="StreamHub IPTV - Premium Live TV Platform" />
+    <meta name="twitter:description" content="Stream hundreds of live TV channels with TV Guide, multi-language audio, and favorites." />
+
+    <!-- PWA & Mobile Web App Manifest -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <meta name="theme-color" content="#FF5722" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="StreamHub" />
+
+    <!-- Google Fonts Preconnect -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Register PWA Service Worker
+      if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
   </body>
 </html>

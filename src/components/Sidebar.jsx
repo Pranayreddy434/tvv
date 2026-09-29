@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Tv, Star, ChevronLeft, ChevronRight, SlidersHorizontal, Clock, ArrowDownAZ, ArrowUpAZ, X } from 'lucide-react';
 
 const CHANNELS_PER_PAGE = 60;
@@ -21,13 +21,22 @@ function ChannelItem({ channel, isPlaying, isFavorite, onSelect, onToggleFavorit
       </div>
 
       <div className="ch-info">
-        <div className="ch-name">{channel.name}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {channel.channelNumber && (
+            <span className="ch-num-pill" style={{ fontSize: 9, padding: '1px 5px' }}>
+              {String(channel.channelNumber).padStart(3, '0')}
+            </span>
+          )}
+          <div className="ch-name">{channel.name}</div>
+        </div>
         <div className="ch-meta">
-          {isPlaying && (
+          {isPlaying ? (
             <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <span className="live-dot" style={{ width: 6, height: 6, flexShrink: 0 }} />
               <span style={{ fontSize: 10, color: 'var(--accent-light)', fontWeight: 700 }}>LIVE</span>
             </span>
+          ) : (
+            <span className="ch-status-dot online" style={{ width: 5, height: 5 }} />
           )}
           <span className="ch-group">{channel.group}</span>
           {(channel.isMultiAudio || (channel.languages && channel.languages.length > 1)) && (
@@ -90,6 +99,24 @@ export default function Sidebar({
   // Filter + sort
   const processed = useMemo(() => {
     let list = [...source];
+    if (activeTab === 'all') {
+      if (selectedCategory && selectedCategory !== 'All') {
+        const catL = selectedCategory.toLowerCase();
+        list = list.filter(ch => {
+          if (selectedCategory === 'Telugu') {
+            return (ch.language && ch.language.toLowerCase() === 'telugu') || (ch.group && ch.group.toLowerCase().includes('telugu'));
+          }
+          const g = (ch.group || '').toLowerCase();
+          const n = (ch.name || '').toLowerCase();
+          const cats = (ch.categories || []).map(c => c.toLowerCase());
+          return g.includes(catL) || n.includes(catL) || cats.includes(catL);
+        });
+      }
+      if (selectedLanguage && selectedLanguage !== 'ALL') {
+        const langL = selectedLanguage.toLowerCase();
+        list = list.filter(ch => (ch.language || '').toLowerCase().includes(langL));
+      }
+    }
     if (qualityFilter === 'MULTI_AUDIO') {
       list = list.filter(ch => ch.isMultiAudio || (ch.languages && ch.languages.length > 1));
     } else if (qualityFilter !== 'ALL') {
@@ -98,14 +125,16 @@ export default function Sidebar({
     if (sort === 'A-Z') list.sort((a, b) => a.name.localeCompare(b.name));
     else if (sort === 'Z-A') list.sort((a, b) => b.name.localeCompare(a.name));
     return list;
-  }, [source, sort, qualityFilter]);
+  }, [source, sort, qualityFilter, activeTab, selectedCategory, selectedLanguage]);
 
   const totalPages = Math.max(1, Math.ceil(processed.length / CHANNELS_PER_PAGE));
   const safePage = Math.min(page, totalPages);
   const slice = processed.slice((safePage - 1) * CHANNELS_PER_PAGE, safePage * CHANNELS_PER_PAGE);
 
   // Reset page when source/filters change
-  useMemo(() => { setPage(1); }, [sort, qualityFilter, activeTab, channels.length]);
+  useEffect(() => {
+    setPage(1);
+  }, [sort, qualityFilter, activeTab, channels.length]);
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>

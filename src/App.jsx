@@ -3,346 +3,767 @@ import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import VideoPlayer from './components/VideoPlayer';
 import ChannelGrid from './components/ChannelGrid';
+import HeroBanner from './components/HeroBanner';
+import ContinueWatchingRow from './components/ContinueWatchingRow';
+import ChannelSectionRow from './components/ChannelSectionRow';
+import TVGuide from './components/TVGuide';
+import SmartSearchModal from './components/SmartSearchModal';
+import SettingsModal from './components/SettingsModal';
+import ChannelDetailsModal from './components/ChannelDetailsModal';
+import ChannelNumberDialer from './components/ChannelNumberDialer';
 import PlaylistModal from './components/PlaylistModal';
 import ShortcutsModal from './components/ShortcutsModal';
+import MobileBottomNav from './components/MobileBottomNav';
+import EmptyState from './components/EmptyState';
+
 import { parseM3U } from './services/m3uParser';
 import { matchesLanguage, isTeluguChannel } from './services/languageService';
-import { Tv, Star, Compass, ListPlus, Sparkles } from 'lucide-react';
+import { ChannelManager } from './services/channelManager';
+import { analytics } from './services/analyticsService';
+
+import {
+  Tv, Star, Film, Radio, Sparkles, Newspaper, Clapperboard,
+  Music, Trophy, Baby, HeartHandshake, Clock, Compass, Shield
+} from 'lucide-react';
 import './index.css';
 
-const DEFAULT_PLAYLIST = 'https://iptv-org.github.io/iptv/index.m3u';
-
-function matchesCategory(channel, cat) {
-  if (cat === 'All') return true;
-  const group = (channel.group || '').toLowerCase();
-  const name = (channel.name || '').toLowerCase();
-  const catL = cat.toLowerCase();
-  return group.includes(catL) || name.includes(catL);
-}
+const DEFAULT_PLAYLIST = 'https://iptv-org.github.io/iptv/languages/tel.m3u';
 
 function getLSJson(key, def) {
-  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }
-  catch { return def; }
+  try {
+    const v = localStorage.getItem(key);
+    return v ? JSON.parse(v) : def;
+  } catch {
+    return def;
+  }
 }
 
 export default function App() {
-  const [allChannels, setAllChannels] = useState([]);
+  // Initialize channels immediately with curated high-definition default channels
+  const [allChannels, setAllChannels] = useState(() => ChannelManager.getActiveChannels());
   const [isLoading, setIsLoading] = useState(false);
-  const [playlistUrl, setPlaylistUrl] = useState(
-    localStorage.getItem('activePlaylist') || DEFAULT_PLAYLIST
-  );
+  const [playlistUrl, setPlaylistUrl] = useState(() => {
+    const saved = localStorage.getItem('activePlaylist');
+    // Clear out corrupted or massive 35k channel global index if previously stored
+    if (saved && (saved.includes('iptv-org.github.io/iptv/index.m3u') || saved === DEFAULT_PLAYLIST)) {
+      localStorage.removeItem('activePlaylist');
+      return '';
+    }
+    return saved || '';
+  });
 
+  // Navigation State
+  const [activeNav, setActiveNav] = useState('home'); // 'home' | 'live' | 'categories' | 'tvguide' | 'favorites' | 'settings'
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedLanguage, setSelectedLanguage] = useState('ALL');
 
+  // Channel Selection & Persistence
   const [currentChannel, setCurrentChannel] = useState(null);
-  const [favorites, setFavorites] = useState(getLSJson('favChannels', []));
-  const [history, setHistory] = useState(getLSJson('chHistory', []));
+  const [lastWatchedChannel, setLastWatchedChannel] = useState(() => getLSJson('lastWatchedChannel', null));
+  const [favorites, setFavorites] = useState(() => getLSJson('favChannels', []));
+  const [history, setHistory] = useState(() => getLSJson('chHistory', []));
   const [corsProxy, setCorsProxy] = useState(false);
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    return typeof window !== 'undefined' ? window.innerWidth < 768 : false;
-  });
-  const [activeTab, setActiveTab] = useState('all');
+  // Layout & Drawers
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [activeSidebarTab, setActiveSidebarTab] = useState('all');
+
+  // Modals
+  const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showDetailsChannel, setShowDetailsChannel] = useState(null);
+  const [showDialerModal, setShowDialerModal] = useState(false);
   const [showPlaylistModal, setShowPlaylistModal] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
 
-  // Load playlist
+  // Theme
+  const [currentTheme, setCurrentTheme] = useState(() => {
+    return localStorage.getItem('appTheme') || 'sunset';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', currentTheme);
+    localStorage.setItem('appTheme', currentTheme);
+  }, [currentTheme]);
+
+  // Persist Favorites, History & Last Watched
+  useEffect(() => {
+    localStorage.setItem('favChannels', JSON.stringify(favorites));
+  }, [favorites]);
+
+  useEffect(() => {
+    localStorage.setItem('chHistory', JSON.stringify(history.slice(0, 20)));
+  }, [history]);
+
+  useEffect(() => {
+    if (lastWatchedChannel) {
+      localStorage.setItem('lastWatchedChannel', JSON.stringify(lastWatchedChannel));
+    }
+  }, [lastWatchedChannel]);
+
+  // Load / Merge M3U playlist on explicit request
   const loadPlaylist = useCallback(async (url) => {
-    if (!url) return;
+    if (!url || url === 'local') return;
     setIsLoading(true);
-    // 1. Try direct fetch first
+
     try {
       const res = await fetch(url);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const text = await res.text();
-      const { channels } = parseM3U(text);
-      setAllChannels(channels);
-      localStorage.setItem('activePlaylist', url);
-      setIsLoading(false);
-      return;
-    } catch (directErr) {
-      console.warn('Direct playlist fetch failed, attempting fallback proxies:', directErr);
+      if (res.ok) {
+        const text = await res.text();
+        const { channels: m3uList } = parseM3U(text, 1500);
+        setAllChannels(ChannelManager.getActiveChannels(m3uList));
+        localStorage.setItem('activePlaylist', url);
+        setIsLoading(false);
+        return;
+      }
+    } catch (err) {
+      // Fallback to CORS proxy
     }
 
-    // 2. Fallback to CORS proxies
     const proxyUrls = [
       `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
       `https://corsproxy.io/?${encodeURIComponent(url)}`
     ];
-    let loaded = false;
+
     for (const pUrl of proxyUrls) {
       try {
         const res = await fetch(pUrl);
         if (!res.ok) continue;
         const text = await res.text();
-        const { channels } = parseM3U(text);
-        setAllChannels(channels);
+        const { channels: m3uList } = parseM3U(text, 1500);
+        setAllChannels(ChannelManager.getActiveChannels(m3uList));
         localStorage.setItem('activePlaylist', url);
-        loaded = true;
         break;
       } catch {
-        // try next
+        // try next proxy
       }
-    }
-    if (!loaded) {
-      console.error('All playlist fetch attempts failed for:', url);
     }
     setIsLoading(false);
   }, []);
 
-  useEffect(() => { loadPlaylist(playlistUrl); }, [playlistUrl, loadPlaylist]);
+  useEffect(() => {
+    // Only auto-load if a valid user-saved custom playlist exists
+    if (!playlistUrl) return;
+    const timer = setTimeout(() => {
+      loadPlaylist(playlistUrl);
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [playlistUrl, loadPlaylist]);
 
-  // Persist favorites & history
-  useEffect(() => { localStorage.setItem('favChannels', JSON.stringify(favorites)); }, [favorites]);
-  useEffect(() => { localStorage.setItem('chHistory', JSON.stringify(history.slice(0, 80))); }, [history]);
+  // Play a channel
+  const handleSelectChannel = useCallback((ch) => {
+    if (!ch) return;
+    setCurrentChannel(ch);
+    setLastWatchedChannel(ch);
+    setActiveNav('live');
 
-  // Filtered channels
-  const filteredChannels = useMemo(() => {
+    setHistory(prev => {
+      const filtered = prev.filter(h => h.id !== ch.id && h.url !== ch.url);
+      return [ch, ...filtered].slice(0, 20);
+    });
+
+    if (window.innerWidth < 1024) {
+      setSidebarCollapsed(true);
+    }
+  }, []);
+
+  // Toggle favorite
+  const handleToggleFavorite = useCallback((ch) => {
+    if (!ch) return;
+    setFavorites(prev => {
+      const exists = prev.some(f => f.id === ch.id || f.url === ch.url);
+      if (exists) {
+        return prev.filter(f => f.id !== ch.id && f.url !== ch.url);
+      } else {
+        return [ch, ...prev];
+      }
+    });
+  }, []);
+
+  // Share Channel (Web Share API with fallback)
+  const handleShareChannel = useCallback((ch) => {
+    if (!ch) return;
+    const shareUrl = window.location.href;
+    if (navigator.share) {
+      navigator.share({
+        title: `${ch.name} - StreamHub IPTV`,
+        text: `Watch ${ch.name} live on StreamHub IPTV!`,
+        url: shareUrl
+      }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(shareUrl);
+      alert(`Link for "${ch.name}" copied to clipboard!`);
+    }
+  }, []);
+
+  // Clear data handlers
+  const handleClearFavorites = () => setFavorites([]);
+  const handleClearHistory = () => setHistory([]);
+  const handleResetAllData = () => {
+    localStorage.clear();
+    setFavorites([]);
+    setHistory([]);
+    setLastWatchedChannel(null);
+    setCurrentTheme('sunset');
+    setAllChannels(ChannelManager.getActiveChannels());
+  };
+
+  // Keyboard number listener for direct channel dialing
+  useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      const tag = e.target.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+
+      if (e.key === '/' || e.key === '?') {
+        e.preventDefault();
+        setShowSearchModal(true);
+      } else if (e.key === 'p' || e.key === 'P') {
+        setShowPlaylistModal(true);
+      } else if (e.key >= '0' && e.key <= '9') {
+        setShowDialerModal(true);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
+
+  // Homepage Filtered Sections
+  const featuredChannel = currentChannel || allChannels[0];
+
+  const teluguChannels = useMemo(() => {
+    return allChannels.filter(c => isTeluguChannel(c));
+  }, [allChannels]);
+
+  const newsChannels = useMemo(() => {
+    return allChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('news') || n.includes('news') || (c.categories && c.categories.includes('News'));
+    });
+  }, [allChannels]);
+
+  const movieChannels = useMemo(() => {
+    return allChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('movie') || g.includes('cinema') || n.includes('cinema') || n.includes('movie') || (c.categories && c.categories.includes('Movies'));
+    });
+  }, [allChannels]);
+
+  const entertainmentChannels = useMemo(() => {
+    return allChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      return g.includes('entertainment') || g.includes('general') || (c.categories && c.categories.includes('Entertainment'));
+    });
+  }, [allChannels]);
+
+  const musicChannels = useMemo(() => {
+    return allChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('music') || n.includes('beats') || n.includes('music') || (c.categories && c.categories.includes('Music'));
+    });
+  }, [allChannels]);
+
+  const sportsChannels = useMemo(() => {
+    return allChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('sport') || n.includes('sport') || (c.categories && c.categories.includes('Sports'));
+    });
+  }, [allChannels]);
+
+  const kidsChannels = useMemo(() => {
+    return allChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('kid') || g.includes('animat') || n.includes('kid') || n.includes('yay') || (c.categories && c.categories.includes('Kids'));
+    });
+  }, [allChannels]);
+
+  const devotionalChannels = useMemo(() => {
+    return allChannels.filter(c => {
+      const g = (c.group || '').toLowerCase();
+      const n = (c.name || '').toLowerCase();
+      return g.includes('religio') || g.includes('spirit') || n.includes('bhakthi') || n.includes('svbc') || n.includes('dharmam') || (c.categories && c.categories.includes('Devotional'));
+    });
+  }, [allChannels]);
+
+  const recentlyAddedChannels = useMemo(() => {
+    return allChannels.filter(c => c.isNew);
+  }, [allChannels]);
+
+  const recommendedChannels = useMemo(() => {
+    const target = currentChannel || lastWatchedChannel || featuredChannel;
+    if (!target) return allChannels.slice(0, 10);
+    return allChannels
+      .filter(c => c.id !== target.id)
+      .filter(c => c.language === target.language || c.group === target.group)
+      .slice(0, 12);
+  }, [allChannels, currentChannel, lastWatchedChannel, featuredChannel]);
+
+  // General Filter for Categories / Directory tab
+  const categoryFilteredChannels = useMemo(() => {
     let list = allChannels;
-
+    if (selectedCategory !== 'All') {
+      const catL = selectedCategory.toLowerCase();
+      list = list.filter(ch => {
+        if (selectedCategory === 'Telugu') return isTeluguChannel(ch);
+        const g = (ch.group || '').toLowerCase();
+        const n = (ch.name || '').toLowerCase();
+        const cats = (ch.categories || []).map(c => c.toLowerCase());
+        const lang = (ch.language || '').toLowerCase();
+        return g.includes(catL) || n.includes(catL) || cats.includes(catL) || lang.includes(catL);
+      });
+    }
     if (selectedLanguage !== 'ALL') {
       list = list.filter(ch => matchesLanguage(ch, selectedLanguage));
     }
-    if (selectedCategory !== 'All') {
-      list = list.filter(ch => matchesCategory(ch, selectedCategory));
-    }
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      list = list.filter(ch =>
-        ch.name.toLowerCase().includes(q) ||
-        (ch.group || '').toLowerCase().includes(q) ||
-        (ch.country || '').toLowerCase().includes(q)
-      );
-    }
     return list;
-  }, [allChannels, selectedLanguage, selectedCategory, searchQuery]);
-
-  const handleSelectChannel = useCallback((ch) => {
-    setCurrentChannel(ch);
-    setHistory(prev => {
-      const filtered = prev.filter(h => h.id !== ch.id && h.url !== ch.url);
-      return [ch, ...filtered].slice(0, 80);
-    });
-    // On mobile, collapse sidebar when channel selected
-    if (window.innerWidth < 768) setSidebarCollapsed(true);
-  }, []);
-
-  const handleToggleFavorite = useCallback((ch) => {
-    setFavorites(prev => {
-      const exists = prev.some(f => f.id === ch.id || f.url === ch.url);
-      return exists ? prev.filter(f => f.id !== ch.id && f.url !== ch.url) : [ch, ...prev];
-    });
-  }, []);
-
-  const handleLanguageSwitch = useCallback((lang) => {
-    setSelectedLanguage(lang);
-    setActiveTab('all');
-  }, []);
-
-  const handleCategorySwitch = useCallback((cat) => {
-    setSelectedCategory(cat);
-    setActiveTab('all');
-  }, []);
-
-  const handleLoadUrl = useCallback((urlOrContent) => {
-    if (urlOrContent.startsWith('#EXTM3U') || urlOrContent.startsWith('#EXTINF')) {
-      const { channels } = parseM3U(urlOrContent);
-      setAllChannels(channels);
-      setPlaylistUrl('local');
-    } else {
-      setPlaylistUrl(urlOrContent);
-    }
-  }, []);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handler = (e) => {
-      const tag = e.target.tagName.toLowerCase();
-      if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
-      if (e.key === '?' || e.key === '/') setShowShortcutsModal(true);
-      if (e.key === 'p') setShowPlaylistModal(true);
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
-
-  const isFavorite = currentChannel
-    ? favorites.some(f => f.id === currentChannel.id || f.url === currentChannel.url)
-    : false;
+  }, [allChannels, selectedCategory, selectedLanguage]);
 
   return (
     <div className="app-shell">
-      {/* TOP BAR */}
+      {/* Top Main Navigation Bar */}
       <Header
+        activeNav={activeNav}
+        onNavigate={(nav) => {
+          setActiveNav(nav);
+          if (nav === 'live' && !currentChannel && allChannels.length > 0) {
+            handleSelectChannel(allChannels[0]);
+          }
+        }}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
-        totalChannels={filteredChannels.length}
+        onOpenSearchModal={() => setShowSearchModal(true)}
+        totalChannels={allChannels.length}
+        favoritesCount={favorites.length}
         activePlaylistUrl={playlistUrl}
         onOpenPlaylistModal={() => setShowPlaylistModal(true)}
         onOpenShortcutsModal={() => setShowShortcutsModal(true)}
+        onOpenSettingsModal={() => setShowSettingsModal(true)}
+        onOpenDialerModal={() => setShowDialerModal(true)}
         corsProxy={corsProxy}
         setCorsProxy={setCorsProxy}
         onRefreshPlaylist={() => loadPlaylist(playlistUrl)}
         isLoading={isLoading}
         selectedCategory={selectedCategory}
-        onCategorySwitch={handleCategorySwitch}
+        onCategorySwitch={(cat) => setSelectedCategory(cat)}
         selectedLanguage={selectedLanguage}
-        onLanguageModeSwitch={handleLanguageSwitch}
+        onLanguageModeSwitch={(lang) => setSelectedLanguage(lang)}
         sidebarCollapsed={sidebarCollapsed}
         setSidebarCollapsed={setSidebarCollapsed}
       />
 
-      {/* APP BODY */}
       <div className="app-body">
-        {/* Mobile Backdrop Overlay */}
+        {/* Mobile Backdrop */}
         <div
           className={`sidebar-backdrop ${!sidebarCollapsed ? 'active' : ''}`}
           onClick={() => setSidebarCollapsed(true)}
           aria-hidden="true"
         />
 
-        {/* LEFT SIDEBAR */}
+        {/* Channels Drawer / Sidebar */}
         <Sidebar
-          channels={filteredChannels}
+          channels={categoryFilteredChannels}
           currentChannel={currentChannel}
           favorites={favorites}
           history={history}
           onSelectChannel={handleSelectChannel}
           onToggleFavorite={handleToggleFavorite}
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          activeTab={activeSidebarTab}
+          setActiveTab={setActiveSidebarTab}
           collapsed={sidebarCollapsed}
           onClose={() => setSidebarCollapsed(true)}
           selectedLanguage={selectedLanguage}
-          onLanguageSwitch={handleLanguageSwitch}
+          onLanguageSwitch={(l) => setSelectedLanguage(l)}
           selectedCategory={selectedCategory}
-          onCategorySwitch={handleCategorySwitch}
+          onCategorySwitch={(c) => setSelectedCategory(c)}
         />
 
-        {/* MAIN PANEL */}
+        {/* Main Display Panel */}
         <main className="main-panel">
-          {isLoading && allChannels.length === 0 ? (
-            <div style={{
-              flex: 1, display: 'flex', flexDirection: 'column',
-              alignItems: 'center', justifyContent: 'center', gap: 20,
-              background: 'radial-gradient(ellipse at center, rgba(255,87,34,0.06) 0%, transparent 70%)'
-            }}>
-              <div className="spin" style={{
-                width: 52, height: 52,
-                border: '3px solid var(--border)',
-                borderTopColor: 'var(--accent)',
-                borderRadius: '50%'
-              }} />
-              <div style={{ textAlign: 'center' }}>
-                <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8, color: 'var(--text-primary)' }}>Loading Channels</h2>
-                <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-                  Fetching {playlistUrl === DEFAULT_PLAYLIST ? 'global IPTV directory' : 'playlist'}…
-                </p>
-              </div>
-            </div>
-          ) : !currentChannel ? (
-            /* MOBILE & INITIAL DIRECTORY HUB:
-               When no channel is selected, show the Channel Directory Grid immediately!
-               Mobile users see channels right on screen without needing to click on top! */
-            <div className="channels-discovery-hub">
-              <div className="hub-banner">
-                <div className="hub-banner-content">
-                  <div className="hub-badge">
-                    <Sparkles size={14} color="var(--accent)" />
-                    <span>Live Channel Directory</span>
-                  </div>
-                  <h1 className="hub-title">Explore & Stream Live TV</h1>
-                  <p className="hub-subtitle">
-                    Select any channel below to start live stream playback instantly
-                  </p>
-                </div>
-              </div>
+          {/* TAB 1: HOMEPAGE (OTT / STREAMING PLATFORM EXPERIENCE) */}
+          {activeNav === 'home' && (
+            <div className="homepage-content-view">
+              {/* Hero / Now Playing */}
+              <HeroBanner
+                channel={featuredChannel}
+                currentChannel={currentChannel}
+                isPlaying={Boolean(currentChannel)}
+                onPlayChannel={handleSelectChannel}
+                isFavorite={favorites.some(f => f.id === featuredChannel?.id)}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+              />
 
-              <ChannelGrid
-                channels={filteredChannels}
+              {/* Continue Watching Banner */}
+              {lastWatchedChannel && (
+                <ContinueWatchingRow
+                  lastWatched={lastWatchedChannel}
+                  onPlayChannel={handleSelectChannel}
+                  onDismiss={() => setLastWatchedChannel(null)}
+                />
+              )}
+
+              {/* My Favorites Rail */}
+              {favorites.length > 0 && (
+                <ChannelSectionRow
+                  title="My Favorites"
+                  icon={Star}
+                  subtitle="Your personally starred live channels"
+                  channels={favorites}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  badge="Saved"
+                  onViewAll={() => setActiveNav('favorites')}
+                />
+              )}
+
+              {/* Telugu Live TV Section */}
+              <ChannelSectionRow
+                title="Telugu Live TV"
+                icon={Tv}
+                subtitle="Top regional entertainment, movies, and news from AP & Telangana"
+                channels={teluguChannels}
                 currentChannel={currentChannel}
                 onSelectChannel={handleSelectChannel}
                 favorites={favorites}
                 onToggleFavorite={handleToggleFavorite}
-                selectedCategory={selectedCategory}
-                selectedLanguage={selectedLanguage}
-                searchQuery={searchQuery}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+                badge="Popular"
+                onViewAll={() => { setSelectedCategory('Telugu'); setActiveNav('categories'); }}
+              />
+
+              {/* News Section */}
+              <ChannelSectionRow
+                title="News Channels"
+                icon={Newspaper}
+                subtitle="Live 24/7 breaking news and current affairs bulletins"
+                channels={newsChannels}
+                currentChannel={currentChannel}
+                onSelectChannel={handleSelectChannel}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+                onViewAll={() => { setSelectedCategory('News'); setActiveNav('categories'); }}
+              />
+
+              {/* Movies Section */}
+              <ChannelSectionRow
+                title="Movies & Cinema"
+                icon={Clapperboard}
+                subtitle="Blockbuster releases, superhit cinema, and non-stop film channels"
+                channels={movieChannels}
+                currentChannel={currentChannel}
+                onSelectChannel={handleSelectChannel}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+                onViewAll={() => { setSelectedCategory('Movies'); setActiveNav('categories'); }}
+              />
+
+              {/* Entertainment Section */}
+              <ChannelSectionRow
+                title="Entertainment & Serials"
+                icon={Sparkles}
+                subtitle="Prime family drama, comedy shows, and star specials"
+                channels={entertainmentChannels}
+                currentChannel={currentChannel}
+                onSelectChannel={handleSelectChannel}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+                onViewAll={() => { setSelectedCategory('Entertainment'); setActiveNav('categories'); }}
+              />
+
+              {/* Music Section */}
+              <ChannelSectionRow
+                title="Music & Chartbusters"
+                icon={Music}
+                subtitle="Trending music videos, soundtrack releases, and melodies"
+                channels={musicChannels}
+                currentChannel={currentChannel}
+                onSelectChannel={handleSelectChannel}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+                onViewAll={() => { setSelectedCategory('Music'); setActiveNav('categories'); }}
+              />
+
+              {/* Sports Section */}
+              <ChannelSectionRow
+                title="Sports Arena"
+                icon={Trophy}
+                subtitle="Live cricket, football, athletics, and championship coverage"
+                channels={sportsChannels}
+                currentChannel={currentChannel}
+                onSelectChannel={handleSelectChannel}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+                onViewAll={() => { setSelectedCategory('Sports'); setActiveNav('categories'); }}
+              />
+
+              {/* Kids Section */}
+              <ChannelSectionRow
+                title="Kids & Cartoons"
+                icon={Baby}
+                subtitle="Animated series, children's rhymes, and family-friendly cartoons"
+                channels={kidsChannels}
+                currentChannel={currentChannel}
+                onSelectChannel={handleSelectChannel}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+                onViewAll={() => { setSelectedCategory('Kids'); setActiveNav('categories'); }}
+              />
+
+              {/* Devotional Section */}
+              <ChannelSectionRow
+                title="Devotional & Spiritual"
+                icon={HeartHandshake}
+                subtitle="Sacred temple darshans, rituals, and spiritual discourses"
+                channels={devotionalChannels}
+                currentChannel={currentChannel}
+                onSelectChannel={handleSelectChannel}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+                onViewAll={() => { setSelectedCategory('Devotional'); setActiveNav('categories'); }}
+              />
+
+              {/* Recently Added Section */}
+              {recentlyAddedChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="Recently Added Channels"
+                  icon={Sparkles}
+                  subtitle="Fresh additions to our streaming directory"
+                  channels={recentlyAddedChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  badge="NEW"
+                  onViewAll={() => { setSelectedCategory('All'); setActiveNav('categories'); }}
+                />
+              )}
+
+              {/* Recommended Channels */}
+              <ChannelSectionRow
+                title="Recommended Channels"
+                icon={Compass}
+                subtitle="You may also like based on your viewing preferences"
+                channels={recommendedChannels}
+                currentChannel={currentChannel}
+                onSelectChannel={handleSelectChannel}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
               />
             </div>
-          ) : (
+          )}
+
+          {/* TAB 2: LIVE TV PLAYER (SPLIT DESKTOP / STACKED MOBILE) */}
+          {activeNav === 'live' && (
             <VideoPlayer
-              channel={currentChannel}
+              channel={currentChannel || allChannels[0]}
               allChannels={allChannels}
               onSelectChannel={handleSelectChannel}
               onToggleFavorite={handleToggleFavorite}
-              isFavorite={isFavorite}
+              isFavorite={favorites.some(f => f.id === (currentChannel?.id || allChannels[0]?.id))}
               corsProxy={corsProxy}
               setCorsProxy={setCorsProxy}
               onOpenChannels={() => setSidebarCollapsed(false)}
+              onOpenSearch={() => setShowSearchModal(true)}
+              onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+              onBrowseChannels={(cat) => {
+                if (cat) setSelectedCategory(cat);
+                setActiveNav('categories');
+              }}
+              selectedCategory={selectedCategory}
+              onCategorySwitch={(cat) => {
+                setSelectedCategory(cat);
+              }}
             />
+          )}
+
+          {/* TAB 3: CATEGORIES & CHANNEL DIRECTORY GRID */}
+          {activeNav === 'categories' && (
+            <div className="categories-directory-view">
+              <div className="directory-header-banner">
+                <h1 className="directory-title">
+                  {selectedCategory === 'All' ? 'All Channels Directory' : `${selectedCategory} Live TV`}
+                </h1>
+                <p className="directory-subtitle">
+                  Browse, filter by quality, or sort through {categoryFilteredChannels.length.toLocaleString()} verified broadcast streams
+                </p>
+              </div>
+
+              <ChannelGrid
+                channels={categoryFilteredChannels}
+                currentChannel={currentChannel}
+                onSelectChannel={handleSelectChannel}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                onShareChannel={handleShareChannel}
+                selectedCategory={selectedCategory}
+                onCategorySwitch={(c) => setSelectedCategory(c)}
+                selectedLanguage={selectedLanguage}
+                onLanguageSwitch={(l) => setSelectedLanguage(l)}
+                searchQuery={searchQuery}
+                isLoading={isLoading && allChannels.length === 0}
+              />
+            </div>
+          )}
+
+          {/* TAB 4: TV GUIDE / EPG */}
+          {activeNav === 'tvguide' && (
+            <TVGuide
+              channels={allChannels}
+              currentChannel={currentChannel}
+              onSelectChannel={handleSelectChannel}
+              favorites={favorites}
+              onToggleFavorite={handleToggleFavorite}
+            />
+          )}
+
+          {/* TAB 5: FAVORITES */}
+          {activeNav === 'favorites' && (
+            <div className="favorites-page-view">
+              <div className="directory-header-banner">
+                <h1 className="directory-title">★ My Favorites</h1>
+                <p className="directory-subtitle">
+                  {favorites.length} channel(s) saved for quick instant playback
+                </p>
+              </div>
+
+              {favorites.length === 0 ? (
+                <EmptyState
+                  type="favorites"
+                  title="No favorite channels yet"
+                  message="Browse the channel directory and click the star icon on any channel card to pin it here."
+                  actionLabel="Browse Channels"
+                  onAction={() => setActiveNav('categories')}
+                />
+              ) : (
+                <ChannelGrid
+                  channels={favorites}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                />
+              )}
+            </div>
           )}
         </main>
       </div>
 
-      {/* MOBILE BOTTOM DOCK (Sticky on phones & touch devices) */}
-      <nav className="mobile-bottom-dock">
-        <button
-          className={`mobile-dock-btn ${!sidebarCollapsed ? 'active' : ''}`}
-          onClick={() => {
-            setSidebarCollapsed(!sidebarCollapsed);
-            setActiveTab('all');
-          }}
-          title="Toggle Channels"
-        >
-          <Tv size={18} />
-          <span>Channels</span>
-        </button>
-
-        <button
-          className={`mobile-dock-btn ${activeTab === 'favorites' && !sidebarCollapsed ? 'active' : ''}`}
-          onClick={() => {
-            setActiveTab('favorites');
-            setSidebarCollapsed(false);
-          }}
-          title="Favorites"
-        >
-          <Star size={18} fill={favorites.length > 0 ? '#F59E0B' : 'none'} color="#F59E0B" />
-          <span>Favorites</span>
-        </button>
-
-        <button
-          className={`mobile-dock-btn ${!currentChannel ? 'active' : ''}`}
-          onClick={() => {
-            setCurrentChannel(null); // Show channels discovery grid
-            setSidebarCollapsed(true);
-          }}
-          title="Browse All Channels"
-        >
-          <Compass size={18} />
-          <span>Directory</span>
-        </button>
-
-        <button
-          className="mobile-dock-btn"
-          onClick={() => setShowPlaylistModal(true)}
-          title="Playlists"
-        >
-          <ListPlus size={18} />
-          <span>Playlist</span>
-        </button>
-      </nav>
+      {/* Sticky Bottom Navigation for Mobile Touch Screens (Requirement 19) */}
+      <MobileBottomNav
+        activeNav={activeNav}
+        onNavigate={(nav) => {
+          if (nav === 'search') {
+            setShowSearchModal(true);
+          } else if (nav === 'settings') {
+            setShowSettingsModal(true);
+          } else {
+            setActiveNav(nav);
+            if (nav === 'live' && !currentChannel && allChannels.length > 0) {
+              handleSelectChannel(allChannels[0]);
+            }
+          }
+        }}
+        favoritesCount={favorites.length}
+      />
 
       {/* MODALS */}
+      {/* 1. Smart Search Modal */}
+      <SmartSearchModal
+        isOpen={showSearchModal}
+        onClose={() => setShowSearchModal(false)}
+        allChannels={allChannels}
+        currentChannel={currentChannel}
+        onSelectChannel={handleSelectChannel}
+        favorites={favorites}
+        onToggleFavorite={handleToggleFavorite}
+        onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+        onShareChannel={handleShareChannel}
+      />
+
+      {/* 2. Settings Modal */}
+      <SettingsModal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        currentTheme={currentTheme}
+        onThemeChange={(t) => setCurrentTheme(t)}
+        onClearFavorites={handleClearFavorites}
+        onClearHistory={handleClearHistory}
+        onResetAllData={handleResetAllData}
+        favoritesCount={favorites.length}
+        historyCount={history.length}
+      />
+
+      {/* 3. Channel Details Modal */}
+      {showDetailsChannel && (
+        <ChannelDetailsModal
+          channel={showDetailsChannel}
+          onClose={() => setShowDetailsChannel(null)}
+          onPlayChannel={handleSelectChannel}
+          isFavorite={favorites.some(f => f.id === showDetailsChannel.id)}
+          onToggleFavorite={handleToggleFavorite}
+          onShareChannel={handleShareChannel}
+        />
+      )}
+
+      {/* 4. Channel Number Dialer Modal */}
+      <ChannelNumberDialer
+        isOpen={showDialerModal}
+        onClose={() => setShowDialerModal(false)}
+        allChannels={allChannels}
+        onSelectChannel={handleSelectChannel}
+      />
+
+      {/* 5. M3U Playlist Modal */}
       {showPlaylistModal && (
         <PlaylistModal
           onClose={() => setShowPlaylistModal(false)}
-          onLoadUrl={handleLoadUrl}
+          onLoadUrl={(urlOrText) => {
+            if (urlOrText.startsWith('#EXTM3U') || urlOrText.startsWith('#EXTINF')) {
+              const { channels: parsed } = parseM3U(urlOrText);
+              setAllChannels(ChannelManager.getActiveChannels(parsed));
+              setPlaylistUrl('local');
+            } else {
+              setPlaylistUrl(urlOrText);
+              loadPlaylist(urlOrText);
+            }
+          }}
           activePlaylistUrl={playlistUrl}
         />
       )}
 
+      {/* 6. Keyboard Shortcuts Modal */}
       {showShortcutsModal && (
         <ShortcutsModal onClose={() => setShowShortcutsModal(false)} />
       )}
