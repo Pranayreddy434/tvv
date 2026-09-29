@@ -23,11 +23,11 @@ import { analytics } from './services/analyticsService';
 
 import {
   Tv, Star, Film, Radio, Sparkles, Newspaper, Clapperboard,
-  Music, Trophy, Baby, HeartHandshake, Clock, Compass, Shield
+  Music, Trophy, Baby, HeartHandshake, Clock, Compass, Shield, Globe
 } from 'lucide-react';
 import './index.css';
 
-const DEFAULT_PLAYLIST = 'https://iptv-org.github.io/iptv/languages/tel.m3u';
+const DEFAULT_PLAYLIST = 'https://iptv-org.github.io/iptv/countries/in.m3u';
 
 function getLSJson(key, def) {
   try {
@@ -38,18 +38,50 @@ function getLSJson(key, def) {
   }
 }
 
+function getCachedM3u() {
+  try {
+    const data = localStorage.getItem('cached_m3u_channels');
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function setCachedM3u(list) {
+  try {
+    const compact = (list || []).slice(0, 1000).map(c => ({
+      id: c.id,
+      name: c.name,
+      logo: c.logo,
+      url: c.url,
+      streamUrl: c.streamUrl || c.url,
+      language: c.language,
+      languages: c.languages,
+      group: c.group,
+      categories: c.categories,
+      quality: c.quality,
+      status: c.status || 'online',
+      country: c.country
+    }));
+    localStorage.setItem('cached_m3u_channels', JSON.stringify(compact));
+  } catch {}
+}
+
 export default function App() {
-  // Initialize channels immediately with curated high-definition default channels
-  const [allChannels, setAllChannels] = useState(() => ChannelManager.getActiveChannels());
+  // Initialize channels immediately with curated high-definition default channels + cached playlist
+  const [allChannels, setAllChannels] = useState(() => {
+    const cached = getCachedM3u();
+    return ChannelManager.getActiveChannels(cached);
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [playlistUrl, setPlaylistUrl] = useState(() => {
     const saved = localStorage.getItem('activePlaylist');
-    // Clear out corrupted or massive 35k channel global index if previously stored
-    if (saved && (saved.includes('iptv-org.github.io/iptv/index.m3u') || saved === DEFAULT_PLAYLIST)) {
+    // Clear out stale single-language playlist
+    if (saved && (saved.includes('iptv-org.github.io/iptv/languages/tel.m3u') || saved.includes('iptv-org.github.io/iptv/index.m3u'))) {
       localStorage.removeItem('activePlaylist');
-      return '';
+      return DEFAULT_PLAYLIST;
     }
-    return saved || '';
+    return saved || DEFAULT_PLAYLIST;
   });
 
   // Navigation State
@@ -102,19 +134,27 @@ export default function App() {
     }
   }, [lastWatchedChannel]);
 
-  // Load / Merge M3U playlist on explicit request
+  // Load / Merge M3U playlist on explicit request or auto-load
   const loadPlaylist = useCallback(async (url) => {
     if (!url || url === 'local') return;
     setIsLoading(true);
+
+    const applyParsedChannels = (m3uList) => {
+      if (m3uList && m3uList.length > 0) {
+        const active = ChannelManager.getActiveChannels(m3uList);
+        setAllChannels(active);
+        setCachedM3u(m3uList);
+      }
+      localStorage.setItem('activePlaylist', url);
+      setIsLoading(false);
+    };
 
     try {
       const res = await fetch(url);
       if (res.ok) {
         const text = await res.text();
         const { channels: m3uList } = parseM3U(text, 1500);
-        setAllChannels(ChannelManager.getActiveChannels(m3uList));
-        localStorage.setItem('activePlaylist', url);
-        setIsLoading(false);
+        applyParsedChannels(m3uList);
         return;
       }
     } catch (err) {
@@ -132,9 +172,8 @@ export default function App() {
         if (!res.ok) continue;
         const text = await res.text();
         const { channels: m3uList } = parseM3U(text, 1500);
-        setAllChannels(ChannelManager.getActiveChannels(m3uList));
-        localStorage.setItem('activePlaylist', url);
-        break;
+        applyParsedChannels(m3uList);
+        return;
       } catch {
         // try next proxy
       }
@@ -143,11 +182,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // Only auto-load if a valid user-saved custom playlist exists
-    if (!playlistUrl) return;
+    const targetUrl = playlistUrl || DEFAULT_PLAYLIST;
     const timer = setTimeout(() => {
-      loadPlaylist(playlistUrl);
-    }, 1200);
+      loadPlaylist(targetUrl);
+    }, 800);
     return () => clearTimeout(timer);
   }, [playlistUrl, loadPlaylist]);
 
@@ -231,8 +269,28 @@ export default function App() {
   // Homepage Filtered Sections
   const featuredChannel = currentChannel || allChannels[0];
 
+  const hindiChannels = useMemo(() => {
+    return allChannels.filter(c => matchesLanguage(c, 'Hindi'));
+  }, [allChannels]);
+
   const teluguChannels = useMemo(() => {
     return allChannels.filter(c => isTeluguChannel(c));
+  }, [allChannels]);
+
+  const tamilChannels = useMemo(() => {
+    return allChannels.filter(c => matchesLanguage(c, 'Tamil'));
+  }, [allChannels]);
+
+  const englishChannels = useMemo(() => {
+    return allChannels.filter(c => matchesLanguage(c, 'English'));
+  }, [allChannels]);
+
+  const malayalamChannels = useMemo(() => {
+    return allChannels.filter(c => matchesLanguage(c, 'Malayalam'));
+  }, [allChannels]);
+
+  const kannadaChannels = useMemo(() => {
+    return allChannels.filter(c => matchesLanguage(c, 'Kannada'));
   }, [allChannels]);
 
   const newsChannels = useMemo(() => {
@@ -310,6 +368,9 @@ export default function App() {
       const catL = selectedCategory.toLowerCase();
       list = list.filter(ch => {
         if (selectedCategory === 'Telugu') return isTeluguChannel(ch);
+        if (['Hindi', 'Tamil', 'English', 'Malayalam', 'Kannada', 'Bengali', 'Marathi', 'Punjabi'].includes(selectedCategory)) {
+          return matchesLanguage(ch, selectedCategory);
+        }
         const g = (ch.group || '').toLowerCase();
         const n = (ch.name || '').toLowerCase();
         const cats = (ch.categories || []).map(c => c.toLowerCase());
@@ -426,21 +487,111 @@ export default function App() {
                 />
               )}
 
+              {/* Hindi Live TV Section */}
+              {hindiChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="Hindi Live TV"
+                  icon={Tv}
+                  subtitle="Top national Hindi entertainment, news, movies, and music"
+                  channels={hindiChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  badge="Trending"
+                  onViewAll={() => { setSelectedCategory('Hindi'); setActiveNav('categories'); }}
+                />
+              )}
+
               {/* Telugu Live TV Section */}
-              <ChannelSectionRow
-                title="Telugu Live TV"
-                icon={Tv}
-                subtitle="Top regional entertainment, movies, and news from AP & Telangana"
-                channels={teluguChannels}
-                currentChannel={currentChannel}
-                onSelectChannel={handleSelectChannel}
-                favorites={favorites}
-                onToggleFavorite={handleToggleFavorite}
-                onOpenDetails={(ch) => setShowDetailsChannel(ch)}
-                onShareChannel={handleShareChannel}
-                badge="Popular"
-                onViewAll={() => { setSelectedCategory('Telugu'); setActiveNav('categories'); }}
-              />
+              {teluguChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="Telugu Live TV"
+                  icon={Tv}
+                  subtitle="Top regional entertainment, movies, and news from AP & Telangana"
+                  channels={teluguChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  badge="Popular"
+                  onViewAll={() => { setSelectedCategory('Telugu'); setActiveNav('categories'); }}
+                />
+              )}
+
+              {/* Tamil Live TV Section */}
+              {tamilChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="Tamil Live TV"
+                  icon={Tv}
+                  subtitle="Leading Tamil entertainment, 24x7 news, serials, and cinema"
+                  channels={tamilChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  badge="Live"
+                  onViewAll={() => { setSelectedCategory('Tamil'); setActiveNav('categories'); }}
+                />
+              )}
+
+              {/* English & Global Live TV Section */}
+              {englishChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="English & World TV"
+                  icon={Globe}
+                  subtitle="World news, international documentaries, sports, and Hollywood cinema"
+                  channels={englishChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  badge="Global"
+                  onViewAll={() => { setSelectedCategory('English'); setActiveNav('categories'); }}
+                />
+              )}
+
+              {/* Malayalam Live TV Section */}
+              {malayalamChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="Malayalam Live TV"
+                  icon={Tv}
+                  subtitle="Kerala regional news, entertainment, and cultural broadcasts"
+                  channels={malayalamChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  onViewAll={() => { setSelectedCategory('Malayalam'); setActiveNav('categories'); }}
+                />
+              )}
+
+              {/* Kannada Live TV Section */}
+              {kannadaChannels.length > 0 && (
+                <ChannelSectionRow
+                  title="Kannada Live TV"
+                  icon={Tv}
+                  subtitle="Karnataka state news, debates, entertainment, and local updates"
+                  channels={kannadaChannels}
+                  currentChannel={currentChannel}
+                  onSelectChannel={handleSelectChannel}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+                  onShareChannel={handleShareChannel}
+                  onViewAll={() => { setSelectedCategory('Kannada'); setActiveNav('categories'); }}
+                />
+              )}
 
               {/* News Section */}
               <ChannelSectionRow

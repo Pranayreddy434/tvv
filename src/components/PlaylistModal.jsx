@@ -2,11 +2,11 @@ import React, { useState } from 'react';
 import { X, Upload, Link, Check, Radio, Sparkles, ExternalLink } from 'lucide-react';
 
 const PRESET_PLAYLISTS = [
+  { name: '🇮🇳 iptv-org • India (All Indian Channels: Hindi, Telugu, Tamil, English, etc.)', url: 'https://iptv-org.github.io/iptv/countries/in.m3u' },
+  { name: '🌐 iptv-org Index (All 10,000+ Worldwide Channels)', url: 'https://iptv-org.github.io/iptv/index.m3u' },
   { name: '🚩 iptv-org • Telugu (80+ Live Channels)', url: 'https://iptv-org.github.io/iptv/languages/tel.m3u' },
-  { name: '🌐 iptv-org Index (All 10,000+ Channels)', url: 'https://iptv-org.github.io/iptv/index.m3u' },
-  { name: '🇮🇳 iptv-org • India (All Indian Channels)', url: 'https://iptv-org.github.io/iptv/countries/in.m3u' },
-  { name: '🇬🇧 iptv-org • UK', url: 'https://iptv-org.github.io/iptv/countries/gb.m3u' },
   { name: '🇺🇸 iptv-org • USA', url: 'https://iptv-org.github.io/iptv/countries/us.m3u' },
+  { name: '🇬🇧 iptv-org • UK', url: 'https://iptv-org.github.io/iptv/countries/gb.m3u' },
   { name: '🇩🇪 iptv-org • Germany', url: 'https://iptv-org.github.io/iptv/countries/de.m3u' },
 ];
 

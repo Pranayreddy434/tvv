@@ -106,6 +106,9 @@ export default function Sidebar({
           if (selectedCategory === 'Telugu') {
             return (ch.language && ch.language.toLowerCase() === 'telugu') || (ch.group && ch.group.toLowerCase().includes('telugu'));
           }
+          if (['Hindi', 'Tamil', 'English', 'Malayalam', 'Kannada', 'Bengali', 'Marathi', 'Punjabi'].includes(selectedCategory)) {
+            return (ch.language && ch.language.toLowerCase().includes(catL)) || (ch.group && ch.group.toLowerCase().includes(catL));
+          }
           const g = (ch.group || '').toLowerCase();
           const n = (ch.name || '').toLowerCase();
           const cats = (ch.categories || []).map(c => c.toLowerCase());

@@ -462,7 +462,7 @@ export default function VideoPlayer({
     onSelectChannel(allChannels[nextIdx]);
   }, [allChannels, currentIndex, onSelectChannel]);
 
-  // Touch Swipe navigation for mobile
+  // Mobile touch and tap handling (Clean & Safe: NEVER switch channels on screen touch)
   const handleTouchStart = (e) => {
     const touch = e.touches[0];
     touchStartRef.current = {
@@ -473,74 +473,41 @@ export default function VideoPlayer({
   };
 
   const handleTouchEnd = (e) => {
-    const touch = e.changedTouches[0];
-    const diffX = touch.clientX - touchStartRef.current.x;
-    const diffY = touch.clientY - touchStartRef.current.y;
-    const elapsed = Date.now() - touchStartRef.current.time;
-
-    // Fast swipe (>55px, <400ms) for channel surfing (adjusted for landscape rotation)
-    const delta = isLandscapeMode ? diffY : diffX;
-    const crossDelta = isLandscapeMode ? diffX : diffY;
-
-    if (elapsed < 400 && Math.abs(delta) > 55 && Math.abs(delta) > Math.abs(crossDelta) * 1.4) {
-      if (delta > 0) {
-        handlePrevChannel();
-        showAudioNotification('⏮️ Previous Channel', 1500);
-      } else {
-        handleNextChannel();
-        showAudioNotification('⏭️ Next Channel', 1500);
-      }
-      return;
-    }
-
-    // Otherwise handle tap / double-tap for controls & fullscreen
+    // Never switch channels on touch or swipe. Delegate to tap handler.
     handlePlayerTap(e);
   };
 
-  // Mobile Tap & Double-Tap Handler
+  // Screen Tap / Click Handler - toggles controls or fullscreen, NEVER switches channels
   const handlePlayerTap = (e) => {
+    // If interacting with interactive controls or overlay buttons, ignore
     if (
       e.target.closest('button') ||
       e.target.closest('select') ||
       e.target.closest('input') ||
-      e.target.closest('.audio-track-popover')
+      e.target.closest('.audio-track-popover') ||
+      e.target.closest('.player-top-bar') ||
+      e.target.closest('.player-bottom-controls') ||
+      e.target.closest('.player-center-play-btn')
     ) {
       return;
     }
 
     const now = Date.now();
-    const touch = e.changedTouches ? e.changedTouches[0] : e;
-    const clientX = touch.clientX;
-    const clientY = touch.clientY;
-    const rect = containerRef.current?.getBoundingClientRect();
-
-    // When rotated 90 degrees, calculate relative coordinate along video's horizontal axis
-    let relPos, totalSpan;
-    if (isLandscapeMode) {
-      relPos = rect ? clientY - rect.top : 0;
-      totalSpan = rect ? rect.height : window.innerHeight;
-    } else {
-      relPos = rect ? clientX - rect.left : 0;
-      totalSpan = rect ? rect.width : window.innerWidth;
-    }
-
-    // Double tap within 300ms
-    if (now - lastTapRef.current.time < 300) {
-      clearTimeout(singleTapTimerRef.current);
-      if (relPos < totalSpan * 0.28) {
-        handlePrevChannel();
-        showAudioNotification('⏮️ Previous Channel', 1500);
-      } else if (relPos > totalSpan * 0.72) {
-        handleNextChannel();
-        showAudioNotification('⏭️ Next Channel', 1500);
-      } else {
-        toggleFullscreen();
-      }
-      lastTapRef.current = { time: 0, x: 0, y: 0 };
+    // Guard against duplicate synthetic clicks fired right after touchEnd
+    if (e.type === 'click' && now - touchStartRef.current.time < 500 && touchStartRef.current.time > 0) {
       return;
     }
 
-    lastTapRef.current = { time: now, x: clientX, y: clientY };
+    // Double tap within 300ms toggles fullscreen (YouTube style), NEVER changes channel
+    if (now - lastTapRef.current.time < 300) {
+      clearTimeout(singleTapTimerRef.current);
+      lastTapRef.current = { time: 0, x: 0, y: 0 };
+      toggleFullscreen();
+      return;
+    }
+
+    const touch = e.changedTouches ? e.changedTouches[0] : e;
+    lastTapRef.current = { time: now, x: touch.clientX, y: touch.clientY };
 
     // Single tap: toggle controls overlay
     clearTimeout(singleTapTimerRef.current);
@@ -550,7 +517,7 @@ export default function VideoPlayer({
         if (next) showControls();
         return next;
       });
-    }, 300);
+    }, 280);
   };
 
   // Keyboard navigation & Escape key handling
