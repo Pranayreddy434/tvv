@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Star, Tv, Play, Share2, Info, Check } from 'lucide-react';
+import { Star, Tv, Play, Share2, Info, Check, EyeOff } from 'lucide-react';
 import { analytics } from '../services/analyticsService';
 
 export default function ChannelCard({
@@ -10,6 +10,7 @@ export default function ChannelCard({
   onToggleFavorite,
   onOpenDetails,
   onShareChannel,
+  onHideChannel,
   viewLayout = 'grid' // 'grid' | 'rail' | 'list' | 'compact'
 }) {
   const [imgError, setImgError] = useState(false);
@@ -97,6 +98,7 @@ export default function ChannelCard({
     e.stopPropagation();
     if (onOpenDetails) onOpenDetails(channel);
   };
+  const handleHide = (e) => { e.stopPropagation(); onHideChannel?.(channel); };
 
   // Compact row layout (e.g. for fast lists)
   if (viewLayout === 'compact') {
@@ -133,6 +135,7 @@ export default function ChannelCard({
               color={isFavorite ? '#F59E0B' : 'var(--text-muted)'}
             />
           </button>
+          {onHideChannel && <button onClick={handleHide} className="card-quick-action-btn" title="Hide channel" aria-label={`Hide ${channel.name}`}><EyeOff size={14} /></button>}
         </div>
       </div>
     );
@@ -205,6 +208,7 @@ export default function ChannelCard({
               color={isFavorite ? '#F59E0B' : 'var(--text-muted)'}
             />
           </button>
+          {onHideChannel && <button onClick={handleHide} className="card-quick-action-btn" title="Hide channel" aria-label={`Hide ${channel.name}`}><EyeOff size={13} /></button>}
           <button
             className="btn-play-sm"
             onClick={(e) => { e.stopPropagation(); onSelectChannel(channel); }}

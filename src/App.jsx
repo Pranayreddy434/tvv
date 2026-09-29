@@ -16,6 +16,8 @@ import ShortcutsModal from './components/ShortcutsModal';
 import MobileBottomNav from './components/MobileBottomNav';
 import MiniPlayer from './components/MiniPlayer';
 import EmptyState from './components/EmptyState';
+import TVMode from './components/TVMode';
+import InstallPrompt from './components/InstallPrompt';
 
 import { parseM3U } from './services/m3uParser';
 import { matchesLanguage, isTeluguChannel } from './services/languageService';
@@ -86,7 +88,7 @@ export default function App() {
   });
 
   // Navigation State
-  const [activeNav, setActiveNav] = useState('home'); // 'home' | 'live' | 'categories' | 'tvguide' | 'favorites' | 'settings'
+  const [activeNav, setActiveNav] = useState('home'); // 'home' | 'live' | 'tv' | 'categories' | 'tvguide' | 'favorites' | 'mytv'
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedLanguage, setSelectedLanguage] = useState('ALL');
@@ -98,6 +100,7 @@ export default function App() {
   const [favorites, setFavorites] = useState(() => getLSJson('favChannels', []));
   const [history, setHistory] = useState(() => getLSJson('chHistory', []));
   const [corsProxy, setCorsProxy] = useState(false);
+  const [hiddenChannelIds, setHiddenChannelIds] = useState(() => Array.from(ChannelManager.getDisabledChannelIds()));
 
   // Layout & Drawers
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
@@ -237,6 +240,14 @@ export default function App() {
       }
     });
   }, []);
+
+  const handleHideChannel = useCallback((ch) => {
+    if (!ch?.id) return;
+    ChannelManager.toggleChannelStatus(ch.id, false);
+    setHiddenChannelIds(prev => [...new Set([...prev, ch.id])]);
+    setAllChannels(prev => prev.filter(item => item.id !== ch.id));
+    if (currentChannel?.id === ch.id) setCurrentChannel(null);
+  }, [currentChannel]);
 
   // Share Channel (Web Share API with fallback)
   const handleShareChannel = useCallback((ch) => {
@@ -510,6 +521,10 @@ export default function App() {
         onOpenPlaylistModal={() => setShowPlaylistModal(true)}
         onOpenShortcutsModal={() => setShowShortcutsModal(true)}
         onOpenSettingsModal={() => setShowSettingsModal(true)}
+        onEnterTVMode={() => {
+          if (!currentChannel && allChannels.length) setCurrentChannel(allChannels[0]);
+          setActiveNav('tv');
+        }}
         onOpenDialerModal={() => setShowDialerModal(true)}
         corsProxy={corsProxy}
         setCorsProxy={setCorsProxy}
@@ -948,6 +963,25 @@ export default function App() {
             />
           )}
 
+          {activeNav === 'tv' && (
+            <TVMode
+              channel={currentChannel || allChannels[0]}
+              channels={allChannels}
+              favorites={favorites}
+              onSelectChannel={handleSelectChannel}
+              onToggleFavorite={handleToggleFavorite}
+              onExit={() => setActiveNav('live')}
+              corsProxy={corsProxy}
+              setCorsProxy={setCorsProxy}
+              onOpenChannels={() => setSidebarCollapsed(false)}
+              onOpenSearch={() => setShowSearchModal(true)}
+              onOpenDetails={(ch) => setShowDetailsChannel(ch)}
+              onBrowseChannels={(cat) => { if (cat) setSelectedCategory(cat); setActiveNav('categories'); }}
+              selectedCategory={selectedCategory}
+              onCategorySwitch={setSelectedCategory}
+            />
+          )}
+
           {/* TAB 3: CATEGORIES & CHANNEL DIRECTORY GRID */}
           {activeNav === 'categories' && (
             <div className="categories-directory-view">
@@ -968,6 +1002,7 @@ export default function App() {
                 onToggleFavorite={handleToggleFavorite}
                 onOpenDetails={(ch) => setShowDetailsChannel(ch)}
                 onShareChannel={handleShareChannel}
+                onHideChannel={handleHideChannel}
                 selectedCategory={selectedCategory}
                 onCategorySwitch={(c) => setSelectedCategory(c)}
                 selectedLanguage={selectedLanguage}
@@ -1049,6 +1084,7 @@ export default function App() {
         }}
         favoritesCount={favorites.length}
       />
+      <InstallPrompt />
 
       {/* MODALS */}
       {/* 1. Smart Search Modal */}

@@ -19,6 +19,7 @@ export default function ChannelGrid({
   onToggleFavorite,
   onOpenDetails,
   onShareChannel,
+  onHideChannel,
   selectedCategory = 'All',
   onCategorySwitch,
   selectedLanguage = 'ALL',
@@ -234,6 +235,7 @@ export default function ChannelGrid({
                 onToggleFavorite={onToggleFavorite}
                 onOpenDetails={onOpenDetails}
                 onShareChannel={onShareChannel}
+                onHideChannel={onHideChannel}
                 viewLayout={viewLayout}
               />
             ))}

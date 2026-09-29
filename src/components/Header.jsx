@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Tv, Home, Film, Calendar, Star, Search, Settings,
   RefreshCw, Shield, ListPlus, HelpCircle, Menu, Hash,
-  Palette, Sparkles, X
+  Palette, Sparkles, X, MonitorPlay
 } from 'lucide-react';
 import { CATEGORIES_LIST } from '../data/defaultChannels';
 
@@ -29,6 +29,7 @@ export default function Header({
   onLanguageModeSwitch,
   sidebarCollapsed,
   setSidebarCollapsed,
+  onEnterTVMode,
 }) {
   const [showCatDropdown, setShowCatDropdown] = useState(false);
 
@@ -122,6 +123,10 @@ export default function Header({
           >
             <Hash size={14} color="var(--accent-light)" />
             <span>Channel #</span>
+          </button>
+          <button onClick={onEnterTVMode} className="theme-selector-btn" title="TV Mode">
+            <MonitorPlay size={14} color="var(--accent-light)" />
+            <span>TV Mode</span>
           </button>
 
           {/* CORS Proxy Toggle */}
