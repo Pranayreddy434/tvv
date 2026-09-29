@@ -35,15 +35,46 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    
+    <!-- Self-Healing: Auto-recover from stale Service Worker or 404 chunk errors on mobile -->
+    <script>
+      window.addEventListener('error', function (e) {
+        var isAsset = e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK');
+        var isChunkErr = e.message && (
+          e.message.indexOf('Loading chunk') !== -1 ||
+          e.message.indexOf('Failed to fetch dynamically imported module') !== -1 ||
+          e.message.indexOf('error loading dynamically imported module') !== -1
+        );
+        if (isAsset || isChunkErr) {
+          console.warn('[StreamHub] Asset error detected, resetting stale caches and reloading...');
+          if (!sessionStorage.getItem('sw_stale_cleared_v4')) {
+            sessionStorage.setItem('sw_stale_cleared_v4', '1');
+            if ('serviceWorker' in navigator) {
+              navigator.serviceWorker.getRegistrations().then(function (regs) {
+                regs.forEach(function (r) { r.unregister(); });
+              });
+            }
+            if ('caches' in window) {
+              caches.keys().then(function (keys) {
+                keys.forEach(function (k) { caches.delete(k); });
+              });
+            }
+            setTimeout(function () { window.location.reload(true); }, 150);
+          }
+        }
+      }, true);
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
     <script>
-      // Register PWA Service Worker
+      // Register PWA Service Worker with auto-update
       if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('/sw.js').then(function (reg) {
+            reg.update().catch(function () {});
+          }).catch(function () {});
         });
       }
     </script>

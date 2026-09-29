@@ -1,40 +1,87 @@
-// Service Worker for StreamHub PWA
-const CACHE_NAME = 'streamhub-cache-v1';
-const STATIC_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/icon.svg'
-];
+// Service Worker for StreamHub PWA (v4 - Network-First for HTML to prevent stale white screen)
+const CACHE_NAME = 'streamhub-cache-v4';
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS).catch(() => {});
-    })
-  );
+  // Activate immediately without waiting for tabs to close
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
+  // Purge all old caches immediately
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.map((key) => {
+          if (key !== CACHE_NAME) {
+            console.log('[SW] Purging old cache:', key);
+            return caches.delete(key);
+          }
+        })
       );
-    })
+    }).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
-  // Let stream media requests pass straight through to network
-  if (event.request.url.includes('.m3u8') || event.request.url.includes('.ts') || event.request.url.includes('stream')) {
+  const url = event.request.url;
+
+  // Let stream media pass straight through
+  if (
+    url.includes('.m3u8') ||
+    url.includes('.ts') ||
+    url.includes('stream') ||
+    url.includes('allorigins') ||
+    url.includes('corsproxy')
+  ) {
     return;
   }
+
+  // HTML page navigations: ALWAYS NETWORK-FIRST!
+  // This guarantees mobile devices always receive the latest bundle hashes after any push/deploy.
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match('/index.html')))
+    );
+    return;
+  }
+
+  // Static assets (CSS, JS, Fonts): Fetch from network first or fallback to cache
+  if (url.includes('/assets/') || url.endsWith('.js') || url.endsWith('.css')) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // Other assets (images, manifest): Cache first, fallback to network
   event.respondWith(
     caches.match(event.request).then((cached) => {
-      return cached || fetch(event.request).catch(() => cached);
+      return (
+        cached ||
+        fetch(event.request).then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        }).catch(() => null)
+      );
     })
   );
 });

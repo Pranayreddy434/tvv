@@ -206,33 +206,39 @@ export default function VideoPlayer({
   useEffect(() => {
     const handleOrientationChange = () => {
       if (isFullscreen) {
-        const isPortrait = window.matchMedia('(orientation: portrait)').matches || window.innerHeight > window.innerWidth;
+        const isPortrait = (typeof window.matchMedia === 'function' && window.matchMedia('(orientation: portrait)').matches) || (window.innerHeight > window.innerWidth);
         setIsLandscapeMode(isPortrait);
       }
     };
 
     window.addEventListener('resize', handleOrientationChange);
     window.addEventListener('orientationchange', handleOrientationChange);
-    if (window.screen?.orientation) {
-      window.screen.orientation.addEventListener('change', handleOrientationChange);
+    
+    const sOrient = typeof window !== 'undefined' ? window.screen?.orientation : null;
+    if (sOrient && typeof sOrient.addEventListener === 'function') {
+      try {
+        sOrient.addEventListener('change', handleOrientationChange);
+      } catch (e) {}
     }
 
     if (isFullscreen) {
-      document.body.style.overflow = 'hidden';
-      document.documentElement.style.overflow = 'hidden';
+      if (document.body) document.body.style.overflow = 'hidden';
+      if (document.documentElement) document.documentElement.style.overflow = 'hidden';
     } else {
-      document.body.style.overflow = '';
-      document.documentElement.style.overflow = '';
+      if (document.body) document.body.style.overflow = '';
+      if (document.documentElement) document.documentElement.style.overflow = '';
     }
 
     return () => {
       window.removeEventListener('resize', handleOrientationChange);
       window.removeEventListener('orientationchange', handleOrientationChange);
-      if (window.screen?.orientation) {
-        window.screen.orientation.removeEventListener('change', handleOrientationChange);
+      if (sOrient && typeof sOrient.removeEventListener === 'function') {
+        try {
+          sOrient.removeEventListener('change', handleOrientationChange);
+        } catch (e) {}
       }
-      document.body.style.overflow = '';
-      document.documentElement.style.overflow = '';
+      if (document.body) document.body.style.overflow = '';
+      if (document.documentElement) document.documentElement.style.overflow = '';
     };
   }, [isFullscreen]);
 
@@ -687,21 +693,19 @@ export default function VideoPlayer({
       }
 
       // 3. Try Screen Orientation Lock to landscape (works in Android Chrome / PWA)
-      if (window.screen?.orientation?.lock) {
+      if (window.screen?.orientation && typeof window.screen.orientation.lock === 'function') {
         try {
           await window.screen.orientation.lock('landscape');
         } catch (e1) {
           try {
             await window.screen.orientation.lock('landscape-primary');
-          } catch (e2) {
-            console.warn('Screen orientation lock not supported or denied:', e2);
-          }
+          } catch (e2) {}
         }
       }
 
       // 4. On mobile/touch screens in portrait: activate YouTube-style CSS 90-degree landscape rotation!
-      const isPortrait = window.matchMedia('(orientation: portrait)').matches || window.innerHeight > window.innerWidth;
-      const isMobile = window.innerWidth <= 900 || ('ontouchstart' in window) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
+      const isPortrait = (typeof window.matchMedia === 'function' && window.matchMedia('(orientation: portrait)').matches) || (window.innerHeight > window.innerWidth);
+      const isMobile = window.innerWidth <= 900 || ('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
 
       if (isMobile && isPortrait) {
         setIsLandscapeMode(true);
